@@ -1,0 +1,18 @@
+ai:
+  score_threshold: 35
+apply:
+  auto_apply_platforms: []
+jobs_found: 100
+last_search: '2026-05-02T08:56:26.405765'
+portals:
+- wellfound
+search:
+  experience_years: 10
+  locations:
+  - Remote
+  max_pages: 1
+  remote_ok: true
+  roles:
+  - Data Scientist
+  - AI Engineer
+  salary_min_inr: 450000

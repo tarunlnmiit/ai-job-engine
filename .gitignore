@@ -1,0 +1,41 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Data and logs
+data/
+logs/
+graphify-out/
+*.log
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Project specific ignores
+resume/*.pdf
+resume/*.docx
+*.png
+*.html
+*.jpg
+*.jpeg
+
+# IDEs
+.vscode/
+.idea/
+.claude/
