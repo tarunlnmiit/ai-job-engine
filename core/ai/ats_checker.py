@@ -8,10 +8,11 @@ from dotenv import load_dotenv
 load_dotenv()
 
 try:
-    import google.genai as genai
-    GEMINI_AVAILABLE = True
+    from groq import Groq
+    from core.ai.client_manager import get_groq_client
+    GROQ_AVAILABLE = True
 except ImportError:
-    GEMINI_AVAILABLE = False
+    GROQ_AVAILABLE = False
 
 ATS_PROMPT = """
 Analyze the following resume and job description for ATS compatibility.
@@ -33,30 +34,32 @@ Return ONLY valid JSON (no markdown):
 
 
 def check_ats_compatibility(resume_text: str, job_description: str) -> Optional[dict]:
-    """Check resume ATS compatibility."""
-    if not GEMINI_AVAILABLE:
+    """Check resume ATS compatibility using Groq."""
+    if not GROQ_AVAILABLE:
         return None
 
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
+    client = get_groq_client()
+    if not client:
         return None
-
-    genai.configure(api_key=api_key)
-    model = genai.Client().models.generate_content
 
     prompt = ATS_PROMPT.format(
         resume_text=resume_text,
         job_description=job_description
     )
 
+    model_name = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
     try:
-        response = model(
-            model="gemini-3-flash-preview",
-            contents=prompt
+        chat_completion = client.chat.completions.create(
+            messages=[
+                {
+                    "role": "user",
+                    "content": prompt,
+                }
+            ],
+            model=model_name,
+            response_format={"type": "json_object"}
         )
-        text = response.text.strip()
-        if text.startswith("```"):
-            text = text.split("```")[1].lstrip("json")
+        text = chat_completion.choices[0].message.content.strip()
         return json.loads(text)
     except Exception as e:
         print(f"Error checking ATS: {e}")

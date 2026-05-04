@@ -9,10 +9,11 @@ from logger import get_logger
 logger = get_logger("ai.resume_tailor")
 
 try:
-    import google.genai as genai
-    GEMINI_AVAILABLE = True
+    from groq import Groq
+    from core.ai.client_manager import get_groq_client
+    GROQ_AVAILABLE = True
 except ImportError:
-    GEMINI_AVAILABLE = False
+    GROQ_AVAILABLE = False
 
 TAILOR_PROMPT = """
 You are an expert resume writer and ATS optimization specialist.
@@ -46,21 +47,18 @@ RULES:
 def tailor_resume(
     resume_text: str, job_description: str, missing_keywords: list[str]
 ) -> Optional[str]:
-    """Tailor resume to a job description using Gemini Flash."""
-    if not GEMINI_AVAILABLE:
-        logger.warning("Gemini SDK not installed — resume tailoring unavailable")
+    """Tailor resume to a job description using Groq (Llama 3)."""
+    if not GROQ_AVAILABLE:
+        logger.warning("Groq SDK not installed — resume tailoring unavailable")
         return None
 
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        logger.warning("GEMINI_API_KEY not set — cannot tailor resume")
+    client = get_groq_client()
+    if not client:
+        logger.warning("No Groq API keys found — cannot tailor resume")
         return None
 
     logger.info("Tailoring resume — missing keywords: %s", missing_keywords)
     logger.debug("Resume length: %d chars, JD length: %d chars", len(resume_text), len(job_description))
-
-    genai.configure(api_key=api_key)
-    model = genai.Client().models.generate_content
 
     prompt = TAILOR_PROMPT.format(
         resume_text=resume_text,
@@ -69,20 +67,27 @@ def tailor_resume(
     )
     logger.debug("Tailor prompt length: %d chars", len(prompt))
 
+    model_name = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
     try:
-        logger.debug("Calling Gemini (gemini-3-flash-preview) for resume tailoring")
+        logger.debug("Calling Groq (%s) for resume tailoring", model_name)
         t0 = time.time()
-        response = model(
-            model="gemini-3-flash-preview",
-            contents=prompt
+        chat_completion = client.chat.completions.create(
+            messages=[
+                {
+                    "role": "user",
+                    "content": prompt,
+                }
+            ],
+            model=model_name,
         )
         elapsed = time.time() - t0
-        logger.info("Resume tailored in %.2fs — output length: %d chars", elapsed, len(response.text))
-        return response.text
+        text = chat_completion.choices[0].message.content.strip()
+        logger.info("Resume tailored in %.2fs — output length: %d chars", elapsed, len(text))
+        return text
     except Exception as e:
-        if "429" in str(e):
-            logger.warning("Gemini rate limited — waiting 60s before retry")
-            time.sleep(60)
+        if "429" in str(e) or "rate_limit_exceeded" in str(e).lower():
+            logger.warning("Groq rate limited — waiting 30s before retry")
+            time.sleep(30)
             return tailor_resume(resume_text, job_description, missing_keywords)
         else:
             logger.error("Error tailoring resume: %s", e)
