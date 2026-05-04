@@ -49,79 +49,69 @@ class RelocateMeScraper(BaseJobScraper):
                     browser = p.chromium.launch(headless=True)
                     page = browser.new_page()
 
-                # URL format: https://relocate.me/search?query={role}&location={location}
+                # Global search for role only to avoid flaky location parameters
                 search_query = role.replace(" ", "+")
-                loc_query = location.replace(" ", "+")
-                url = f"https://relocate.me/search?query={search_query}&location={loc_query}"
+                url = f"https://relocate.me/search?query={search_query}"
                 
-                logger.info("Navigating to %s", url)
-                page.goto(url, wait_until="networkidle", timeout=60000)
+                logger.info("Navigating to %s (Global Search)", url)
+                page.goto(url, wait_until="domcontentloaded", timeout=60000)
                 
-                # Check for "jobs available" text to confirm load
+                # Wait for job listings
                 try:
-                    page.wait_for_selector(".jobs-list", timeout=10000)
+                    page.wait_for_selector(".jobs-list, .jobs-list__job", timeout=20000)
                 except:
-                    # Alternative selector based on markdown analysis
-                    try:
-                        page.wait_for_selector("a[href*='/j/']", timeout=5000)
-                    except:
-                        logger.warning("Job cards not found on Relocate.me.")
-                        return []
+                    logger.warning("Job listings not found on Relocate.me search results.")
+                    return []
 
                 html_content = page.content()
                 soup = BeautifulSoup(html_content, "html.parser")
                 
-                # Looking at the markdown, jobs are in sections or links
-                # Usually job cards have a specific structure on relocate.me
-                # Let's try to find them by link pattern /j/
-                job_links = soup.select("a[href*='/j/']")
-                
-                for link_tag in job_links:
+                # Find job items
+                job_items = soup.select(".jobs-list__job")
+                for item in job_items:
                     try:
-                        # Find the parent container that has more info
-                        # On relocate.me, the link usually contains the title
-                        title = link_tag.get_text(strip=True)
-                        if not title or len(title) < 5: continue
+                        title_elem = item.select_one(".job__title a")
+                        if not title_elem:
+                            continue
                         
-                        href = link_tag["href"]
+                        title = title_elem.get_text(strip=True).split("\nin")[0].strip()
+                        href = title_elem["href"]
                         if not href.startswith("http"):
                             href = "https://relocate.me" + href
                             
                         # Unique ID
                         job_id = hashlib.md5(href.encode()).hexdigest()
                         
-                        # Parent or siblings often contain company/location
-                        parent = link_tag.find_parent()
-                        # Relocate.me markdown shows company above the link in some views
-                        # or in a specific block. Let's try to find company and location.
+                        # Info blocks (Location and Company are often in similar div structures)
+                        info_blocks = item.select(".job__company p")
+                        job_location = "International"
                         company = "Unknown"
-                        job_location = location
                         
-                        # Try to find nearby text for company/location
-                        container = link_tag.find_parent("div", class_="job-card") or parent
-                        if container:
-                            # This depends on the exact HTML, but based on common patterns:
-                            comp_elem = container.select_one(".company-name") or container.select_one("strong")
-                            if comp_elem:
-                                company = comp_elem.get_text(strip=True)
-                            
-                            loc_elem = container.select_one(".location") or container.select_one("span")
-                            if loc_elem:
-                                job_location = loc_elem.get_text(strip=True)
+                        if len(info_blocks) >= 1:
+                            job_location = info_blocks[0].get_text(strip=True)
+                        if len(info_blocks) >= 2:
+                            company = info_blocks[1].get_text(strip=True)
+
+                        # Location filter (case-insensitive)
+                        if location and location.lower() not in ("remote", "anywhere", "international"):
+                            if location.lower() not in job_location.lower():
+                                # Try checking the title or the URL if the location block is messy
+                                if location.lower() not in title.lower() and location.lower() not in href.lower():
+                                    continue
 
                         job = Job(
                             id=job_id,
                             title=title,
                             company=company,
                             location=job_location,
-                            description=f"International relocation opportunity in {job_location}",
+                            description=f"International relocation opportunity in {job_location}. Company: {company}",
                             application_url=href,
                             platform="Relocate.me",
                             date_found=datetime.now().isoformat()
                         )
                         jobs.append(job)
                     except Exception as e:
-                        logger.error("Error parsing Relocate.me card: %s", e)
+                        logger.error("Error parsing Relocate.me job item: %s", e)
                         continue
 
                 page.close()

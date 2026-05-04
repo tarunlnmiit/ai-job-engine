@@ -52,14 +52,19 @@ class ArbeitNowScraper(BaseJobScraper):
                 # URL format: https://www.arbeitnow.com/jobs?query={role}&location={location}&visa=1
                 # Or use the specific visa sponsorship page
                 search_query = role.replace(" ", "+")
-                url = f"https://www.arbeitnow.com/jobs?query={search_query}&visa=1"
+                
+                if location and location.lower() not in ["germany", "remote", "any"]:
+                    loc_slug = location.lower().replace(" ", "-")
+                    url = f"https://www.arbeitnow.com/jobs/{loc_slug}?query={search_query}&visa=1"
+                else:
+                    url = f"https://www.arbeitnow.com/jobs?query={search_query}&visa=1"
                 
                 logger.info("Navigating to %s", url)
-                page.goto(url, wait_until="networkidle", timeout=60000)
+                page.goto(url, wait_until="domcontentloaded", timeout=60000)
                 
                 # Wait for job listings
                 try:
-                    page.wait_for_selector("li[id^='job-']", timeout=10000)
+                    page.wait_for_selector("li[id^='job-'], .job-card, .job-board-card", timeout=20000)
                 except:
                     # Alternative selector
                     try:
@@ -105,9 +110,9 @@ class ArbeitNowScraper(BaseJobScraper):
                             if "by" in text:
                                 company = text.split("by")[1].split("\n")[0].strip()
                             
-                        job_location = "Germany" # Default for ArbeitNow
+                        job_location = location or "Germany" # Default for ArbeitNow
                         # Location is often near a pin icon or specific class
-                        loc_elem = card.select_one(".location") or card.select_one("span:has(svg)")
+                        loc_elem = card.select_one(".location") or card.select_one("div.flex.items-center.text-gray-500.text-xs") or card.select_one("span:has(svg)")
                         if loc_elem:
                             job_location = loc_elem.get_text(strip=True)
 

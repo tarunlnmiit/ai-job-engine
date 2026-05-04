@@ -62,19 +62,25 @@ class TheHubScraper(BaseJobScraper):
                 url = f"https://thehub.io/jobs?search={role.replace(' ', '%20')}&country={country_code}"
                 
                 logger.info("Navigating to %s", url)
-                page.goto(url, wait_until="networkidle", timeout=60000)
+                page.goto(url, wait_until="domcontentloaded", timeout=60000)
                 
                 # Wait for job listings
                 try:
-                    page.wait_for_selector(".job-card", timeout=10000)
+                    page.wait_for_selector(".job-card, [class*='JobCard'], a[href*='/jobs/']", timeout=20000)
                 except:
-                    logger.warning("Job cards not found on The Hub.")
+                    logger.warning("Job listings not found on The Hub.")
                     return []
 
                 html_content = page.content()
                 soup = BeautifulSoup(html_content, "html.parser")
                 
-                cards = soup.select(".job-card")
+                # Job cards are usually in specific classes
+                cards = soup.select(".job-card") or soup.select("[class*='JobCard']") or soup.select(".card")
+                if not cards:
+                    # Fallback to link pattern
+                    cards = soup.select("a[href*='/jobs/']")
+                    # Filter for links that look like job cards
+                    cards = [c.find_parent("div") or c for c in cards if len(c.get_text()) > 10]
                 for card in cards:
                     try:
                         title_elem = card.select_one(".job-card__title") or card.select_one("h4")

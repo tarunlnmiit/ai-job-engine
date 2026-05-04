@@ -65,7 +65,8 @@ with col_main:
             "Scrapers to engage",
             options=[
                 "linkedin", "naukri", "wellfound", "indeed_india",
-                "greenhouse", "lever", "remotive", "weworkremotely", "instahyre", "hacker_news", "hirist", "arbeitnow"
+                "greenhouse", "lever", "remotive", "weworkremotely", "instahyre", 
+                "hacker_news", "hirist", "arbeitnow", "relocateme", "thehub"
             ],
             default=config.get("portals", ["linkedin", "naukri", "greenhouse", "lever", "hacker_news"])
         )
@@ -135,7 +136,8 @@ if submitted:
                 LinkedInScraper, NaukriScraper, GreenhouseScraper,
                 LeverScraper, WellfoundScraper, IndeedScraper,
                 RemotiveScraper, WeWorkRemotely, InstahyreScraper,
-                HackerNewsScraper, HiristScraper, ArbeitNowScraper
+                HackerNewsScraper, HiristScraper, ArbeitNowScraper,
+                RelocateMeScraper, TheHubScraper
             )
             from datetime import datetime
             import asyncio, inspect
@@ -157,7 +159,8 @@ if submitted:
                 "linkedin": LinkedInScraper, "naukri": NaukriScraper, "greenhouse": GreenhouseScraper,
                 "lever": LeverScraper, "wellfound": WellfoundScraper, "indeed_india": IndeedScraper,
                 "remotive": RemotiveScraper, "weworkremotely": WeWorkRemotely, "instahyre": InstahyreScraper,
-                "hacker_news": HackerNewsScraper, "hirist": HiristScraper, "arbeitnow": ArbeitNowScraper
+                "hacker_news": HackerNewsScraper, "hirist": HiristScraper, "arbeitnow": ArbeitNowScraper,
+                "relocateme": RelocateMeScraper, "thehub": TheHubScraper
             }
 
             all_jobs = []
