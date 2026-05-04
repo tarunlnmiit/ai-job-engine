@@ -5,7 +5,7 @@ AI-powered job search automation with resume scoring, tailoring, and automated a
 ## ✨ Features
 
 - **12 job portal scrapers**: LinkedIn, Naukri, Greenhouse, Lever, Remotive, WeWorkRemotely, Wellfound, Instahyre, Indeed, Hacker News, Hirist, ArbeitNow
-- **AI job scoring**: Gemini Flash scores jobs against your resume in real-time
+- **AI job scoring**: Groq Llama 3.3 scores jobs against your resume in real-time
 - **Resume tailoring**: Automatically tailors resume per job description
 - **Auto-apply**: One-click apply to jobs with Easy Apply
 - **Contact finding**: Identifies recruiter contacts at target companies
@@ -45,7 +45,7 @@ cp .env.template .env
 ```
 
 Required:
-- `GEMINI_API_KEY` — Get from https://aistudio.google.com
+- `GROQ_API_KEY_1`, `GROQ_API_KEY_2`, `GROQ_API_KEY_3` — Get from https://console.groq.com
 - `LINKEDIN_EMAIL` — Your LinkedIn email (if using LinkedIn scraper)
 - `LINKEDIN_PASSWORD` — Your LinkedIn password (if using LinkedIn scraper)
 
@@ -108,7 +108,7 @@ Visit `http://localhost:8501` in your browser and go to **Search** tab.
    - Browser automation (LinkedIn) — slower but gets Easy Apply status
 3. **Score against resume**:
    - Parses your resume (DOCX/PDF/TXT)
-   - Sends each job + resume to Gemini Flash
+   - Sends each job + resume to Groq Llama 3.3
    - Gets score (0-100), matching skills, missing skills
    - **Progress bar** shows real-time status
 4. **Filter results**: Only jobs meeting your minimum score threshold appear in Job Feed
@@ -435,7 +435,10 @@ jobs_scored: 0           # Auto-set after search
 
 ```bash
 # Required
-GEMINI_API_KEY=<your_api_key>
+GROQ_API_KEY_1=\u003cyour_key_1\u003e
+GROQ_API_KEY_2=\u003cyour_key_2\u003e
+GROQ_API_KEY_3=\u003cyour_key_3\u003e
+
 
 # Optional - LinkedIn scraper
 LINKEDIN_EMAIL=<your_email@company.com>
@@ -446,10 +449,10 @@ INDEED_EMAIL=<optional>
 INDEED_PASSWORD=<optional>
 ```
 
-Get Gemini API key (free tier):
-1. Visit https://aistudio.google.com
-2. Create API key
-3. Copy to .env
+Get Groq API key:
+1. Visit https://console.groq.com
+2. Create API key(s)
+3. Copy to .env as `GROQ_API_KEY_1`, etc.
 
 **LinkedIn credentials**:
 - Use your real account credentials
@@ -475,11 +478,11 @@ You can:
 
 | Task | LLM | Why |
 |------|-----|-----|
-| Job scoring | Gemini Flash | Fast, free tier (1M tokens/day) |
-| Resume tailoring | Gemini Flash | Best instruction following |
+| Job scoring | Groq Llama 3 | Fast, free tier (rotation support) |
+| Resume tailoring | Groq Llama 3 | Best instruction following |
 | Fallback | Ollama gemma4 | When rate-limited |
 
-**Gemini Flash Limits**: 15 RPM, 1,500 requests/day, 1M tokens/day
+**Groq Limits**: Depends on key tier; rotation handled automatically.
 
 ## 🔐 Privacy & Ethics
 
@@ -545,9 +548,9 @@ playwright install chromium
 pip install beautifulsoup4
 ```
 
-### Gemini API rate limited
+### Groq API rate limited
 **Error**: "429 Rate limited"
-- Gemini free tier: 15 RPM, 1M tokens/day
+- Groq free tier has RPM limits. The tool automatically rotates between multiple keys in `.env`.
 - Wait 60 seconds or upgrade to paid
 - Or disable scoring temporarily
 
@@ -604,15 +607,13 @@ streamlit run app.py
 - Check job description yourself for fit
 - Use score as filter, not absolute decision
 
-**Q: What happens if Gemini API runs out?**
-- Free tier: 1M tokens/day, 15 requests/min
-- Scoring pauses when rate-limited
-- Retry after 60 seconds
-- Upgrade to paid if searching heavily
+**Q: What happens if Groq API runs out?**
+- Scoring rotates to the next key.
+- If all keys are limited, retry after 30 seconds.
 
 **Q: Can I use this with a team?**
 - CSV tracker can be shared
-- Each person needs their own Gemini API key
+- Each person needs their own Groq API key(s)
 - LinkedIn logins are per-person (one account per instance)
 
 ## 🚀 Advanced Usage
@@ -674,7 +675,7 @@ streamlit run app.py --logger.level=debug
 ## 📚 Documentation & Resources
 
 **Tool Documentation**:
-- [Gemini API Docs](https://ai.google.dev/) - Job scoring model
+- [Groq API Docs](https://console.groq.com/docs/quickstart) - Job scoring model
 - [Playwright Docs](https://playwright.dev/python/) - LinkedIn scraping
 - [Streamlit Docs](https://docs.streamlit.io/) - Dashboard UI
 - [BeautifulSoup Docs](https://www.crummy.com/software/BeautifulSoup/bs4/doc/) - Indeed scraping
@@ -733,4 +734,4 @@ MIT License - Use freely for personal job hunting and personal development
 
 **Good luck with your job hunt! 🎯**
 
-*Built with Python, Streamlit, Playwright, Gemini Flash, and ❤️*
+*Built with Python, Streamlit, Playwright, Groq Llama 3, and ❤️*

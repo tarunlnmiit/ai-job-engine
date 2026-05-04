@@ -22,7 +22,10 @@ cp .env.template .env
 
 Edit `.env`:
 ```
-GEMINI_API_KEY=<get from https://aistudio.google.com>
+GROQ_API_KEY_1=<get from https://console.groq.com>
+GROQ_API_KEY_2=<key 2>
+GROQ_API_KEY_3=<key 3>
+
 LINKEDIN_EMAIL=<your email>
 LINKEDIN_PASSWORD=<your password>
 ```
@@ -86,7 +89,7 @@ Skip LinkedIn in config.yaml if you want <1 min searches.
 
 | Problem | Solution |
 |---------|----------|
-| "GEMINI_API_KEY not set" | Check `.env` file exists and has API key |
+| "GROQ_API_KEY_1 not set" | Check `.env` file exists and has API keys |
 | "Playwright not installed" | Run `playwright install chromium` |
 | "No jobs found" | Lower score_threshold in config.yaml to 40% |
 | LinkedIn login fails | Check email/password in `.env`, disable 2FA |

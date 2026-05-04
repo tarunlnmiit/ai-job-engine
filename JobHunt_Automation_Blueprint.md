@@ -6,7 +6,7 @@
 
 A locally-run Streamlit app that:
 1. Scrapes jobs from Indian + global (remote-friendly) portals
-2. Scores each job against your resume using Gemini Flash
+2. Scores each job against your resume using Groq Llama 3.3
 3. Tailors your resume per JD (ATS-optimized + formatted)
 4. Auto-applies on platforms with Easy Apply (LinkedIn, Instahyre, etc.)
 5. Flags non-auto-apply jobs, fetches contact/network info
@@ -19,13 +19,13 @@ A locally-run Streamlit app that:
 
 | Task | LLM | Why |
 |---|---|---|
-| Job scoring against resume | **Gemini Flash** (free API) | Fast, 1M token/day free, large context |
-| Resume tailoring per JD | **Gemini Flash** | Best instruction following for formatting |
-| Skill gap extraction | **Gemini Flash** | Structured output |
-| Contact/network info parsing | **Gemini Flash** | Pattern extraction |
-| Offline fallback / batching | **Ollama gemma4** | When Gemini rate-limited |
+| Job scoring against resume | **Groq Llama 3** | Fast, rotation support, large context |
+| Resume tailoring per JD | **Groq Llama 3** | Best instruction following for formatting |
+| Skill gap extraction | **Groq Llama 3** | Structured output |
+| Contact/network info parsing | **Groq Llama 3** | Pattern extraction |
+| Offline fallback / batching | **Ollama gemma4** | When Groq rate-limited |
 
-**Gemini Flash Free Limits:** 15 RPM, 1,500 requests/day, 1M tokens/day — sufficient for ~100-200 jobs/day.
+**Groq API Limits:** Rotation handles RPM limits automatically across multiple keys.
 
 ---
 
@@ -40,7 +40,7 @@ A locally-run Streamlit app that:
         ┌───────────────────┼───────────────────┐
         ▼                   ▼                   ▼
   [Scraper Engine]   [AI Engine]         [Apply Engine]
-  - LinkedIn         - Gemini Flash      - Selenium
+  - LinkedIn         - Groq Llama 3      - Selenium
   - Naukri           - Ollama gemma4     - Auto-apply
   - Wellfound        - Scoring           - Resume mod
   - Indeed IN        - Tailoring         - Form fill
@@ -65,7 +65,7 @@ Language:       Python 3.11+
 UI:             Streamlit
 Scraping:       Playwright (headless), BeautifulSoup4, httpx
 Browser Auto:   Playwright (apply) or Selenium
-AI:             google-generativeai (Gemini Flash), ollama
+AI:             groq (Llama 3), ollama
 Resume Gen:     python-docx (modify), reportlab (PDF export)
 Excel:          openpyxl
 Scheduling:     APScheduler (auto-refresh)
@@ -80,7 +80,7 @@ Config:         .env file + Streamlit secrets
 ```
 job_hunt_tool/
 ├── app.py                    # Streamlit entry point
-├── .env                      # GEMINI_API_KEY, LinkedIn creds
+├── .env                      # GROQ_API_KEY_1,2,3, LinkedIn creds
 ├── config.yaml               # Search preferences
 ├── requirements.txt
 │
@@ -162,7 +162,7 @@ portals:
   - weworkremotely
 
 ai:
-  primary: gemini-flash
+  primary: groq-llama-3
   fallback: ollama/gemma4
   score_threshold: 65       # Only show jobs scoring >= 65%
 
@@ -355,7 +355,7 @@ class GreenhouseScraper(BaseJobScraper):
 
 ---
 
-### 6.6 AI Scorer — Gemini Flash
+### 6.6 AI Scorer — Groq Llama 3
 
 ```python
 # core/ai/scorer.py
@@ -398,7 +398,7 @@ def score_job(resume_text: str, job: dict) -> dict:
 
 ---
 
-### 6.7 Resume Tailor — Gemini Flash
+### 6.7 Resume Tailor — Groq Llama 3
 
 ```python
 # core/ai/resume_tailor.py
@@ -691,7 +691,7 @@ if submitted:
         # Run scrapers, score jobs, update tracker
         from core.scraper import run_all_scrapers
         jobs = run_all_scrapers(roles.split("\n"), platforms, remote_only)
-        st.success(f"Found {len(jobs)} jobs. Scoring with Gemini Flash...")
+        st.success(f"Found {len(jobs)} jobs. Scoring with Groq Llama 3...")
         # Score and store in session state
 ```
 
@@ -736,7 +736,7 @@ st.info("Review jobs before auto-applying. Resume will be tailored per JD.")
 for job in auto_apply_queue:
     with st.expander(f"{job.title} @ {job.company}"):
         if st.button(f"Tailor & Apply — {job.company}", key=job.id):
-            with st.spinner("Tailoring resume with Gemini Flash..."):
+            with st.status("Tailoring resume with Groq Llama 3..."):
                 tailored = tailor_resume(resume_text, job, job.missing_skills)
                 st.text_area("Tailored Resume Preview", tailored, height=400)
                 if st.button("Confirm & Apply"):
@@ -813,7 +813,7 @@ pip install streamlit playwright beautifulsoup4 httpx \
 playwright install chromium
 
 # 5. Create .env
-echo "GEMINI_API_KEY=your_key_here" > .env
+echo "GROQ_API_KEY_1=your_key_here" > .env
 echo "LINKEDIN_EMAIL=your@email.com" >> .env
 echo "LINKEDIN_PASSWORD=yourpassword" >> .env
 
@@ -849,26 +849,22 @@ streamlit run app.py
 
 ---
 
-## 10. Gemini Flash Integration Details
-
-```python
-# Gemini 1.5 Flash — Free tier
-# 15 requests/minute, 1M tokens/day
-
-import google.generativeai as genai
 import time
+from groq import Groq
 
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-model = genai.GenerativeModel("gemini-3-flash-preview")
+client = Groq(api_key=os.getenv("GROQ_API_KEY_1"))
 
-def safe_gemini_call(prompt: str, retries: int = 3) -> str:
+def safe_groq_call(prompt: str, retries: int = 3) -> str:
     for i in range(retries):
         try:
-            response = model.generate_content(prompt)
-            return response.text
+            response = client.chat.completions.create(
+                messages=[{"role": "user", "content": prompt}],
+                model="llama-3.3-70b-versatile"
+            )
+            return response.choices[0].message.content
         except Exception as e:
             if "429" in str(e):  # Rate limited
-                time.sleep(60)   # Wait 1 min, then retry
+                time.sleep(30)   # Wait 30s, then retry
             else:
                 raise e
     return None
@@ -886,7 +882,7 @@ def safe_gemini_call(prompt: str, retries: int = 3) -> str:
 import ollama
 
 def score_job_local(resume_text: str, job_description: str) -> dict:
-    """Use when Gemini is rate-limited"""
+    """Use when Groq is rate-limited"""
     prompt = f"""
     Score this resume against this job description.
     Resume: {resume_text[:2000]}
@@ -917,7 +913,7 @@ def score_job_local(resume_text: str, job_description: str) -> dict:
 | Location | Job location |
 | Remote | Yes/No |
 | Salary | Salary range if available |
-| Score (%) | Gemini match score |
+| Score (%) | Groq match score |
 | Matching Skills | Skills you have that match |
 | Missing Skills | Skills gap |
 | Status | new / applied / manual_required / interview / rejected |
@@ -933,7 +929,7 @@ def score_job_local(resume_text: str, job_description: str) -> dict:
 
 ### Tool Does Automatically
 - Searches all configured portals on schedule
-- Scores jobs against your resume via Gemini Flash
+- Scores jobs against your resume via Groq Llama 3
 - Filters below your threshold score
 - Tailors resume per JD
 - Applies on LinkedIn Easy Apply + Instahyre
@@ -967,7 +963,7 @@ def score_job_local(resume_text: str, job_description: str) -> dict:
 ### Phase 1 (Week 1) — Core Pipeline
 - [ ] Set up project structure + Streamlit shell
 - [ ] Build Greenhouse + Lever scrapers (easiest, public APIs)
-- [ ] Implement Gemini Flash scoring
+- [ ] Implement Groq Llama 3 scoring
 - [ ] Build Excel tracker
 - [ ] Streamlit: Job Feed page
 
@@ -975,7 +971,7 @@ def score_job_local(resume_text: str, job_description: str) -> dict:
 - [ ] Naukri scraper (semi-public API)
 - [ ] LinkedIn scraper (Playwright)
 - [ ] Resume parser (python-docx)
-- [ ] Resume tailor with Gemini Flash
+- [ ] Resume tailor with Groq Llama 3
 - [ ] Streamlit: Apply Queue page
 
 ### Phase 3 (Week 3) — Auto-Apply
@@ -999,7 +995,7 @@ streamlit>=1.35.0
 playwright>=1.44.0
 beautifulsoup4>=4.12.0
 httpx>=0.27.0
-google-generativeai>=0.7.0
+groq>=0.5.0
 python-docx>=1.1.0
 openpyxl>=3.1.0
 pandas>=2.2.0
@@ -1013,4 +1009,4 @@ lxml>=5.2.0
 
 ---
 
-*Document version: 1.0 | Build with Python 3.11+ | Gemini Flash free API | Ollama gemma4 fallback*
+*Document version: 1.0 | Build with Python 3.11+ | Groq Llama 3 (Rotation) | Ollama gemma4 fallback*

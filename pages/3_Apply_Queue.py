@@ -66,7 +66,7 @@ for job in apply_queue:
         
         c_act1, c_act2 = st.columns(2)
         if c_act1.button(f"✨ GENERATE TAILORED RESUME", key=f"tailor_{job['Job ID']}", width="stretch"):
-            with st.status("Tailoring resume with Gemini Flash...") as status:
+            with st.status("Tailoring resume with Groq Llama 3...") as status:
                 # Mock tailoring for now - in future this calls actual tailoring logic
                 status.write("Analyzing Job Description...")
                 status.write("Aligning experiences...")

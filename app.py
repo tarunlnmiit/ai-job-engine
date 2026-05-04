@@ -102,7 +102,7 @@ with col_l:
 
     with tabs[2]:
         st.markdown("""
-        - **LLM**: Gemini 1.5 Flash (Primary Scorer)
+        - **LLM**: Groq Llama 3.3 (Primary Scorer)
         - **Scrapers**: 12 Platforms (LinkedIn, Hirist, ArbeitNow, etc.)
         - **Browser**: Playwright CDP (Persistent Session)
         - **Storage**: SQLite (Cache) + CSV (Tracking)
