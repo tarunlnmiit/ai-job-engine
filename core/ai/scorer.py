@@ -11,10 +11,11 @@ from logger import get_logger
 logger = get_logger("ai.scorer")
 
 try:
-    import google.genai as genai
-    GEMINI_AVAILABLE = True
+    from groq import Groq
+    from core.ai.client_manager import get_groq_client
+    GROQ_AVAILABLE = True
 except ImportError:
-    GEMINI_AVAILABLE = False
+    GROQ_AVAILABLE = False
 
 try:
     import ollama
@@ -84,22 +85,20 @@ except FileNotFoundError:
 
 
 
-_GEMINI_EXHAUSTED = False
+_GROQ_EXHAUSTED = False
 
 
-def score_job_gemini(resume_text: str, job_description: str, retries: int = 1) -> Optional[dict]:
-    """Score using Gemini Flash."""
-    if not GEMINI_AVAILABLE:
-        logger.debug("Gemini SDK not installed — skipping")
+def score_job_groq(resume_text: str, job_description: str, retries: int = 1) -> Optional[dict]:
+    """Score using Groq (Llama 3)."""
+    if not GROQ_AVAILABLE:
+        logger.debug("Groq SDK not installed — skipping")
         return None
 
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        logger.warning("GEMINI_API_KEY not set — skipping Gemini scoring")
+    logger.debug("Initializing Groq client for scoring")
+    client = get_groq_client()
+    if not client:
+        logger.warning("No Groq API keys found — skipping Groq scoring")
         return None
-
-    logger.debug("Initializing Gemini client for scoring")
-    client = genai.Client(api_key=api_key)
 
     actual_resume_data = PRE_PARSED_SKILLS if PRE_PARSED_SKILLS else resume_text
     prompt = SCORE_PROMPT.format(
@@ -108,41 +107,41 @@ def score_job_gemini(resume_text: str, job_description: str, retries: int = 1) -
     )
     logger.debug("Score prompt length: %d chars", len(prompt))
 
-    model_name = os.getenv("GEMINI_MODEL", "gemini-3-flash-preview")
+    model_name = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
     for attempt in range(retries):
         try:
-            logger.debug("Gemini score request attempt %d/%d using %s", attempt + 1, retries, model_name)
+            logger.debug("Groq score request attempt %d/%d using %s", attempt + 1, retries, model_name)
             t0 = time.time()
-            response = client.models.generate_content(
+            chat_completion = client.chat.completions.create(
+                messages=[
+                    {
+                        "role": "user",
+                        "content": prompt,
+                    }
+                ],
                 model=model_name,
-                contents=prompt
+                response_format={"type": "json_object"}
             )
             elapsed = time.time() - t0
-            text = response.text.strip()
-            logger.debug("Gemini responded in %.2fs — raw length: %d chars", elapsed, len(text))
-
-            if text.startswith("```"):
-                text = text.split("```")[1]
-                if text.startswith("json"):
-                    text = text[4:]
-                logger.debug("Stripped markdown fences from response")
+            text = chat_completion.choices[0].message.content.strip()
+            logger.debug("Groq responded in %.2fs — raw length: %d chars", elapsed, len(text))
 
             result = json.loads(text)
-            logger.debug("Gemini score: %s | matching: %s | missing: %s",
+            logger.debug("Groq score: %s | matching: %s | missing: %s",
                          result.get("score"), result.get("matching_skills"), result.get("missing_skills"))
             return result
         except Exception as e:
-            if "429" in str(e) or "Quota exceeded" in str(e):
-                logger.warning("Gemini rate limited — flipping global exhaustion switch")
-                global _GEMINI_EXHAUSTED
-                _GEMINI_EXHAUSTED = True
+            if "429" in str(e) or "rate_limit_exceeded" in str(e).lower():
+                logger.warning("Groq rate limited — flipping global exhaustion switch")
+                global _GROQ_EXHAUSTED
+                _GROQ_EXHAUSTED = True
                 return None
-            elif "401" in str(e) or "403" in str(e) or "API_KEY_INVALID" in str(e):
-                logger.error("Gemini API Key is invalid or has insufficient permissions: %s", e)
-                logger.info("TIP: Check your GEMINI_API_KEY in the .env file.")
+            elif "401" in str(e) or "403" in str(e) or "authentication_error" in str(e).lower():
+                logger.error("Groq API Key is invalid or has insufficient permissions: %s", e)
+                logger.info("TIP: Check your GROQ_API_KEY in the .env file.")
                 return None
             else:
-                logger.error("Gemini scoring error (attempt %d/%d): %s", attempt + 1, retries, e)
+                logger.error("Groq scoring error (attempt %d/%d): %s", attempt + 1, retries, e)
                 if attempt < retries - 1:
                     time.sleep(2)
 
@@ -273,33 +272,31 @@ def score_job_ollama_best(resume_text: str, job_description: str) -> Optional[di
 
 def score_job(resume_text: str, job_description: str, retries: int = 1) -> Optional[dict]:
     """Score job against resume. Try Gemini first (once), then the best Ollama fallback."""
-    global _GEMINI_EXHAUSTED
+    global _GROQ_EXHAUSTED
     logger.debug("score_job called — resume length: %d chars", len(resume_text))
     
-    # 1. Try Gemini (Fail Fast) - Only if not already exhausted
-    if not _GEMINI_EXHAUSTED:
-        result = score_job_gemini(resume_text, job_description, retries)
+    # 1. Try Groq (Fail Fast) - Only if not already exhausted
+    if not _GROQ_EXHAUSTED:
+        result = score_job_groq(resume_text, job_description, retries)
         if result:
             return result
     else:
-        logger.debug("Skipping Gemini as it is already marked as exhausted/rate-limited")
+        logger.debug("Skipping Groq as it is already marked as exhausted/rate-limited")
 
     # 2. Best Ollama Fallback
     logger.info("Attempting best Ollama fallback")
     return score_job_ollama_best(resume_text, job_description)
 
 
-def score_batch_gemini(resume_text: str, jobs: list[dict], retries: int = 3) -> list[dict]:
-    """Score a batch of jobs together using Gemini."""
-    global _GEMINI_EXHAUSTED
-    if not GEMINI_AVAILABLE:
+def score_batch_groq(resume_text: str, jobs: list[dict], retries: int = 3) -> list[dict]:
+    """Score a batch of jobs together using Groq."""
+    global _GROQ_EXHAUSTED
+    if not GROQ_AVAILABLE:
         return []
 
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
+    client = get_groq_client()
+    if not client:
         return []
-
-    client = genai.Client(api_key=api_key)
     
     # Prepare jobs for the prompt (only id and description to save tokens)
     jobs_to_send = [
@@ -313,29 +310,32 @@ def score_batch_gemini(resume_text: str, jobs: list[dict], retries: int = 3) -> 
         jobs_json=json.dumps(jobs_to_send)
     )
 
-    model_name = os.getenv("GEMINI_MODEL", "gemini-3-flash-preview")
+    model_name = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
     for attempt in range(retries):
         try:
-            response = client.models.generate_content(
+            chat_completion = client.chat.completions.create(
+                messages=[
+                    {
+                        "role": "user",
+                        "content": prompt,
+                    }
+                ],
                 model=model_name,
-                contents=prompt
+                response_format={"type": "json_object"}
             )
-            text = response.text.strip()
-            
-            if text.startswith("```"):
-                text = text.split("```")[1]
-                if text.startswith("json"):
-                    text = text[4:]
+            text = chat_completion.choices[0].message.content.strip()
             
             results = json.loads(text)
             if isinstance(results, list):
                 return results
+            elif isinstance(results, dict) and "jobs" in results:
+                return results["jobs"]
             return []
         except Exception as e:
-            if "429" in str(e) or "Quota exceeded" in str(e):
-                _GEMINI_EXHAUSTED = True
+            if "429" in str(e) or "rate_limit_exceeded" in str(e).lower():
+                _GROQ_EXHAUSTED = True
                 raise e
-            logger.error("Gemini batch scoring error: %s", e)
+            logger.error("Groq batch scoring error: %s", e)
             time.sleep(2)
     
     return []
@@ -496,7 +496,7 @@ def score_batch_claudecode(resume_text: str, jobs: list[dict], retries: int = 2)
 
 def score_batch(resume_text: str, jobs: list[dict], batch_size: int = 50, max_workers: int = 1, on_chunk_complete=None) -> list[dict]:
     """Score multiple jobs efficiently in parallel chunks with rate limiting."""
-    global _GEMINI_EXHAUSTED
+    global _GROQ_EXHAUSTED
     scored_jobs_map = {}
     best_ollama = benchmark_ollama_models()
     
@@ -538,28 +538,29 @@ def score_batch(resume_text: str, jobs: list[dict], batch_size: int = 50, max_wo
             except Exception as e:
                 logger.error("Claude batch failed for a chunk: %s", e)
     
-    # 2. Try Gemini for remaining jobs (Fail Fast) - Only if not already exhausted
+    # 2. Try Groq for remaining jobs (Fail Fast) - Only if not already exhausted
     remaining_jobs = [j for j in jobs if j.get("id") not in scored_jobs_map]
-    if GEMINI_AVAILABLE and remaining_jobs:
-        logger.info("Starting Gemini batch scoring for %d remaining jobs — chunks of %d", len(remaining_jobs), batch_size)
+    if GROQ_AVAILABLE and remaining_jobs:
+        logger.info("Starting Groq batch scoring for %d remaining jobs — chunks of %d", len(remaining_jobs), batch_size)
         
         chunks = [remaining_jobs[i:i + batch_size] for i in range(0, len(remaining_jobs), batch_size)]
         
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_chunk = {}
             for i, chunk in enumerate(chunks):
-                if _GEMINI_EXHAUSTED:
-                    # Pivoting to Ollama BATCH immediately
-                    results = score_batch_ollama(resume_text, chunk, best_ollama)
-                    if results:
-                        for res in results:
-                            scored_jobs_map[res.get("id")] = res
-                        if on_chunk_complete:
-                            on_chunk_complete(results)
+                if _GROQ_EXHAUSTED:
+                    if best_ollama:
+                        # Pivoting to Ollama BATCH immediately
+                        results = score_batch_ollama(resume_text, chunk, best_ollama)
+                        if results:
+                            for res in results:
+                                scored_jobs_map[res.get("id")] = res
+                            if on_chunk_complete:
+                                on_chunk_complete(results)
                     continue
 
                 if i > 0: time.sleep(5) 
-                future = executor.submit(score_batch_gemini, resume_text, chunk)
+                future = executor.submit(score_batch_groq, resume_text, chunk)
                 future_to_chunk[future] = chunk
             
             for future in as_completed(future_to_chunk):
@@ -572,24 +573,27 @@ def score_batch(resume_text: str, jobs: list[dict], batch_size: int = 50, max_wo
                         if on_chunk_complete:
                             on_chunk_complete(results)
                 except Exception as e:
-                    if "Quota exceeded" in str(e) or "429" in str(e):
-                        _GEMINI_EXHAUSTED = True
-                        # Gemini failed, try Ollama BATCH for this chunk
-                        logger.info("Gemini batch failed — falling back to Ollama Batch")
-                        ollama_sub_chunks = [chunk[j:j+5] for j in range(0, len(chunk), 5)]
-                        for sub_chunk in ollama_sub_chunks:
-                            results = score_batch_ollama(resume_text, sub_chunk, best_ollama)
-                            if results:
-                                for res in results:
-                                    scored_jobs_map[res.get("id")] = res
-                                if on_chunk_complete:
-                                    on_chunk_complete(results)
+                    if "rate_limit_exceeded" in str(e).lower() or "429" in str(e):
+                        _GROQ_EXHAUSTED = True
+                        # Groq failed, try Ollama BATCH for this chunk if available
+                        if best_ollama:
+                            logger.info("Groq batch failed — falling back to Ollama Batch")
+                            ollama_sub_chunks = [chunk[j:j+5] for j in range(0, len(chunk), 5)]
+                            for sub_chunk in ollama_sub_chunks:
+                                results = score_batch_ollama(resume_text, sub_chunk, best_ollama)
+                                if results:
+                                    for res in results:
+                                        scored_jobs_map[res.get("id")] = res
+                                    if on_chunk_complete:
+                                        on_chunk_complete(results)
+                        else:
+                            logger.warning("Groq batch failed and Ollama not available.")
                     else:
                         logger.error("Parallel batch scoring failed for a chunk: %s", e)
 
-    # 3. Final Cleanup: If any jobs are still unscored, do ONE final Ollama batch for all of them
+    # 3. Final Cleanup: If any jobs are still unscored, do ONE final Ollama batch if available
     unscored_jobs = [j for j in jobs if j.get("id") not in scored_jobs_map]
-    if unscored_jobs:
+    if unscored_jobs and best_ollama:
         logger.info("Final Cleanup: Scoring %d remaining jobs via Ollama Batch", len(unscored_jobs))
         for i in range(0, len(unscored_jobs), 5):
             chunk = unscored_jobs[i:i+5]
@@ -599,6 +603,8 @@ def score_batch(resume_text: str, jobs: list[dict], batch_size: int = 50, max_wo
                     scored_jobs_map[res.get("id")] = res
                 if on_chunk_complete:
                     on_chunk_complete(results)
+    elif unscored_jobs:
+        logger.warning("Final Cleanup: %d jobs remain unscored and no local fallback available.", len(unscored_jobs))
 
     # Assemble final list
     final_jobs = []

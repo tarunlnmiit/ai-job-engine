@@ -20,9 +20,16 @@ try:
 except ImportError:
     OLLAMA_AVAILABLE = False
 
+try:
+    from groq import Groq
+    from core.ai.client_manager import get_groq_client
+    GROQ_AVAILABLE = True
+except ImportError:
+    GROQ_AVAILABLE = False
+
 EXPAND_PROMPT = """You are a job search expert.
 
-Given a target role and years of experience, return a JSON list of similar/equivalent job titles that recruiters commonly use for the same or adjacent positions. Include:
+Given a target role and years of experience, return a JSON object containing a list of similar/equivalent job titles that recruiters commonly use for the same or adjacent positions. Include:
 - Alternate naming conventions (e.g. "Data Scientist" → "ML Engineer", "AI Researcher")
 - Seniority variants appropriate for {experience} years of experience
 - Adjacent roles where skills heavily overlap
@@ -31,8 +38,10 @@ Given a target role and years of experience, return a JSON list of similar/equiv
 Target Role: {role}
 Years of Experience: {experience}
 
-Return ONLY a valid JSON array of strings, no markdown, no explanation:
-["title1", "title2", "title3", ...]
+Return ONLY a valid JSON object with a "titles" key containing an array of strings, no markdown, no explanation:
+{{
+  "titles": ["title1", "title2", "title3", ...]
+}}
 
 Include 5-10 titles. Include the original role. Keep titles concise and job-board-friendly."""
 
@@ -70,7 +79,14 @@ def expand_roles_gemini(role: str, experience: int) -> list[str] | None:
                 text = text[4:]
             logger.debug("Stripped markdown fences — cleaned: %s", text[:200])
 
-        titles = json.loads(text)
+        data = json.loads(text)
+        if isinstance(data, dict) and "titles" in data:
+            titles = data["titles"]
+        elif isinstance(data, list):
+            titles = data
+        else:
+            titles = [role]
+            
         logger.info("Gemini expanded to %d titles: %s", len(titles), titles)
         return titles
 
@@ -106,7 +122,14 @@ def expand_roles_ollama(role: str, experience: int) -> list[str] | None:
                 text = text[4:]
             logger.debug("Stripped markdown fences — cleaned: %s", text[:200])
 
-        titles = json.loads(text)
+        data = json.loads(text)
+        if isinstance(data, dict) and "titles" in data:
+            titles = data["titles"]
+        elif isinstance(data, list):
+            titles = data
+        else:
+            titles = [role]
+            
         logger.info("Ollama expanded to %d titles: %s", len(titles), titles)
         return titles
 
@@ -118,20 +141,77 @@ def expand_roles_ollama(role: str, experience: int) -> list[str] | None:
         return None
 
 
+def expand_roles_groq(role: str, experience: int) -> list[str] | None:
+    logger.debug("Groq available=%s", GROQ_AVAILABLE)
+    if not GROQ_AVAILABLE:
+        logger.debug("Groq SDK not installed — skipping")
+        return None
+
+    client = get_groq_client()
+    if not client:
+        logger.warning("No Groq API keys available — skipping Groq role expansion")
+        return None
+
+    model_name = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+    logger.info("Calling Groq (%s) for role='%s' exp=%d", model_name, role, experience)
+    t0 = time.time()
+
+    try:
+        prompt = EXPAND_PROMPT.format(role=role, experience=experience)
+        logger.debug("Prompt length: %d chars", len(prompt))
+
+        chat_completion = client.chat.completions.create(
+            messages=[
+                {
+                    "role": "user",
+                    "content": prompt,
+                }
+            ],
+            model=model_name,
+            response_format={"type": "json_object"}
+        )
+        elapsed = time.time() - t0
+        text = chat_completion.choices[0].message.content.strip()
+        logger.debug("Groq responded in %.2fs — raw: %s", elapsed, text[:200])
+
+        titles = json.loads(text)
+        if isinstance(titles, dict) and "titles" in titles:
+            titles = titles["titles"]
+        
+        logger.info("Groq expanded to %d titles: %s", len(titles), titles)
+        return titles
+
+    except json.JSONDecodeError as e:
+        logger.error("Groq JSON parse failed: %s — raw text: %s", e, text[:300])
+        return None
+    except Exception as e:
+        logger.error("Groq role expansion error: %s", e)
+        return None
+
+
 def expand_roles(role: str, experience: int) -> list[str]:
-    """Return similar job titles for role + experience. Gemini → Ollama fallback."""
+    """Return similar job titles for role + experience. Gemini → Groq → Ollama fallback."""
     logger.info("expand_roles called: role='%s' experience=%d", role, experience)
 
+    # 1. Try Gemini
     titles = expand_roles_gemini(role, experience)
     if titles:
         logger.info("Using Gemini result — %d titles", len(titles))
         return titles
 
-    logger.info("Gemini failed — falling back to Ollama")
+    # 2. Try Groq
+    logger.info("Gemini failed or skipped — trying Groq")
+    titles = expand_roles_groq(role, experience)
+    if titles:
+        logger.info("Using Groq result — %d titles", len(titles))
+        return titles
+
+    # 3. Try Ollama
+    logger.info("Groq failed or skipped — falling back to Ollama")
     titles = expand_roles_ollama(role, experience)
     if titles:
         logger.info("Using Ollama result — %d titles", len(titles))
         return titles
 
-    logger.warning("Both engines failed — returning original role only: ['%s']", role)
+    logger.warning("All AI engines failed — returning original role only: ['%s']", role)
     return [role]
