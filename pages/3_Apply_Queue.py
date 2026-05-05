@@ -11,27 +11,24 @@ apply_custom_style()
 st.title("🤖 Auto-Apply Intelligence")
 st.markdown("##### *Review AI-tailored submissions before final delivery.*")
 
-# Check if resume exists
-resume_path = get_resume_path()
+# Get the mission context from session state (from Search page)
+mission_context = st.session_state.get("mission_context", "EU")
+
+# Check if apply resume exists (mode="apply")
+resume_path = get_resume_path(mode="apply", job_type=mission_context)
 if not resume_path:
-    st.warning("""
-    ### ⚠️ Resume not found!
+    st.warning(f"""
+    ### ⚠️ '{mission_context}' Resume for Application not found!
     
-    The engine needs your base resume to generate tailored versions.
+    The engine needs your **shortened** resume to apply for jobs.
     
     **How to fix:**
-    1. Place your resume file (PDF, DOCX, or TXT) in the `resume/` folder.
-    2. Ensure the filename is clear (e.g., `my_resume.pdf`).
+    1. Ensure you have a file containing '{mission_context}' in `resume/To apply with/`.
+    2. Current search context: **{mission_context}**
     """)
-    
-    uploaded_file = st.file_uploader("Or upload it right here:", type=["docx", "pdf", "txt"])
-    if uploaded_file:
-        os.makedirs("resume", exist_ok=True)
-        with open(f"resume/{uploaded_file.name}", "wb") as f:
-            f.write(uploaded_file.getbuffer())
-        st.success(f"✅ Resume saved: {uploaded_file.name}")
-        st.rerun()
     st.stop()
+
+st.info(f"📁 Using **{mission_context}** CV for applications: `{os.path.basename(resume_path)}`")
 
 # Load real jobs from tracker with 'new' or 'manual_required' status
 tracker = CSVTracker()

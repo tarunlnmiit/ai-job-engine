@@ -40,7 +40,7 @@ class ArbeitNowScraper(BaseJobScraper):
             from .browser_utils import get_browser_context
             with sync_playwright() as p:
                 context = get_browser_context(p, headless=False)
-                page = context.pages[0] if context.pages else context.new_page()
+                page = context.new_page()
 
                 # URL format: https://www.arbeitnow.com/jobs?query={role}&location={location}&visa=1
                 # Or use the specific visa sponsorship page
@@ -53,6 +53,7 @@ class ArbeitNowScraper(BaseJobScraper):
                     url = f"https://www.arbeitnow.com/jobs?query={search_query}&visa=1"
                 
                 logger.info("Navigating to %s", url)
+                page.bring_to_front()
                 page.goto(url, wait_until="domcontentloaded", timeout=60000)
                 
                 # Wait for job listings

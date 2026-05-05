@@ -60,6 +60,15 @@ with col_main:
         with f3:
             score_threshold = st.slider("Min AI Score (%)", 0, 100, config.get("ai", {}).get("score_threshold", 65), 5)
 
+        st.subheader("📄 Resume & Context")
+        mission_context = st.radio(
+            "Mission Context (Which CV to score against?)",
+            options=["EU", "IN", "remote_contractual"],
+            index=0,
+            horizontal=True,
+            help="Select the context for AI scoring. This will use the 'Full Resumes' version for scoring."
+        )
+
         st.subheader("🌐 Platforms")
         platforms = st.multiselect(
             "Scrapers to engage",
@@ -143,15 +152,19 @@ if submitted:
             import asyncio, inspect
 
             from core.ui.style import get_resume_path
-            resume_path = get_resume_path()
-            status.write(f"📄 Analyzing {os.path.basename(resume_path)}...")
-            parser = ResumeParser()
+            # Use the selected mission context for scoring (mode="score")
+            resume_path = get_resume_path(mode="score", job_type=mission_context)
             
             if not resume_path:
-                status.update(label="❌ No resume found!", state="error")
+                status.update(label=f"❌ Full Resume for '{mission_context}' not found in 'resume/Full Resumes'!", state="error")
                 st.stop()
-            
+
+            status.write(f"📄 Analyzing Full Resume: {os.path.basename(resume_path)}...")
+            parser = ResumeParser()
             resume_text = parser.parse(str(resume_path))
+            
+            # Store the mission context in session state for downstream pages (like Apply Queue)
+            st.session_state["mission_context"] = mission_context
             
             db = JobCache()
             tracker = CSVTracker()

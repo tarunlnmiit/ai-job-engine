@@ -121,13 +121,14 @@ if submitted:
         }
         
         from core.ui.style import get_resume_path
-        resume_path = get_resume_path()
+        # Europe page uses EU resume for scoring
+        resume_path = get_resume_path(mode="score", job_type="EU")
         
         if not resume_path:
-            status.update(label="❌ Resume not found!", state="error")
+            status.update(label="❌ EU Full Resume not found in 'resume/Full Resumes'!", state="error")
             st.stop()
             
-        status.write(f"📄 Analyzing {os.path.basename(resume_path)} with EU context...")
+        status.write(f"📄 Analyzing EU Full Resume: {os.path.basename(resume_path)}...")
         parser = ResumeParser()
             
         resume_text = parser.parse(str(resume_path))

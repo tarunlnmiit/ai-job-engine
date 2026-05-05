@@ -49,12 +49,11 @@ class IndeedScraper(BaseJobScraper):
                 page = context.pages[0] if context.pages else context.new_page()
 
                 try:
-                    try:
-                        from playwright_stealth import stealth_sync
-                        stealth_sync(page)
-                        logger.info("Stealth mode enabled for Indeed scraper")
-                    except ImportError:
-                        logger.warning("playwright-stealth not found — skipping stealth mode")
+                    from playwright_stealth import stealth_sync
+                    stealth_sync(page)
+                    logger.info("Stealth mode enabled for Indeed scraper")
+                except ImportError:
+                    logger.warning("playwright-stealth not found — skipping stealth mode")
 
                 has_waited_for_login = False
                 for pg in range(max_pages):
@@ -154,13 +153,7 @@ class IndeedScraper(BaseJobScraper):
                         except Exception as e:
                             logger.warning("Error parsing job card: %s", e)
 
-                if owned_browser:
-                    if 'browser_context' in locals():
-                        browser_context.close()
-                    elif browser:
-                        browser.close()
-                else:
-                    page.close()
+                page.close()
 
         except Exception as e:
             logger.error("Playwright scrape failed: %s", e, exc_info=True)

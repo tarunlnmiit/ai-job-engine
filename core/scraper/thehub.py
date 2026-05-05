@@ -36,21 +36,13 @@ class TheHubScraper(BaseJobScraper):
             return []
 
         jobs = []
-        cdp_url = "http://localhost:9222"
-
         try:
+            from .browser_utils import get_browser_context
             with sync_playwright() as p:
-                try:
-                    browser = p.chromium.connect_over_cdp(cdp_url)
-                    context = browser.contexts[0]
-                    page = context.new_page()
-                except Exception as e:
-                    logger.warning("Could not connect to CDP, launching fresh browser: %s", e)
-                    browser = p.chromium.launch(headless=True)
-                    page = browser.new_page()
+                context = get_browser_context(p, headless=False)
+                page = context.new_page()
 
                 # URL format: https://thehub.io/jobs?search={role}&country={location}
-                # The Hub uses specific country slugs
                 country_map = {
                     "denmark": "DK",
                     "norway": "NO",
@@ -62,6 +54,7 @@ class TheHubScraper(BaseJobScraper):
                 url = f"https://thehub.io/jobs?search={role.replace(' ', '%20')}&country={country_code}"
                 
                 logger.info("Navigating to %s", url)
+                page.bring_to_front()
                 page.goto(url, wait_until="domcontentloaded", timeout=60000)
                 
                 # Wait for job listings

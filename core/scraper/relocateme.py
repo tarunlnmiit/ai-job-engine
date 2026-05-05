@@ -40,21 +40,32 @@ class RelocateMeScraper(BaseJobScraper):
             from .browser_utils import get_browser_context
             with sync_playwright() as p:
                 context = get_browser_context(p, headless=False)
-                page = context.pages[0] if context.pages else context.new_page()
+                page = context.new_page()
 
                 # Global search for role only to avoid flaky location parameters
                 search_query = role.replace(" ", "+")
                 url = f"https://relocate.me/search?query={search_query}"
                 
                 logger.info("Navigating to %s (Global Search)", url)
-                page.goto(url, wait_until="domcontentloaded", timeout=60000)
+                page.bring_to_front()
+                page.goto(url, wait_until="load", timeout=60000)
+                page.wait_for_timeout(2000)
                 
                 # Wait for job listings
                 try:
                     page.wait_for_selector(".jobs-list, .jobs-list__job", timeout=20000)
                 except:
-                    logger.warning("Job listings not found on Relocate.me search results.")
-                    return []
+                    # Check for Cloudflare
+                    if "Cloudflare" in page.content() or "cf-browser-verification" in page.content():
+                        logger.warning("Cloudflare challenge detected on Relocate.me. Please solve it in the browser.")
+                        # Wait a bit longer for user to solve
+                        try:
+                            page.wait_for_selector(".jobs-list, .jobs-list__job", timeout=30000)
+                        except:
+                            return []
+                    else:
+                        logger.warning("Job listings not found on Relocate.me search results.")
+                        return []
 
                 html_content = page.content()
                 soup = BeautifulSoup(html_content, "html.parser")

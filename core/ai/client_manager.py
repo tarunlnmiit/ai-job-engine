@@ -1,5 +1,4 @@
 import os
-import random
 from typing import Optional
 from groq import Groq
 from logger import get_logger
@@ -21,14 +20,16 @@ class GroqClientManager:
         # Load keys from environment
         self._keys = []
         for i in range(1, 11):  # Support up to 10 keys
-            key = os.getenv(f"GROQ_API_KEY_{i}") or os.getenv("GROQ_API_KEY") if i == 1 else None
+            key = os.getenv(f"GROQ_API_KEY_{i}")
+            if i == 1 and not key:
+                key = os.getenv("GROQ_API_KEY")
+            
             if key:
                 self._keys.append(key)
-            elif i > 1 and not os.getenv(f"GROQ_API_KEY_{i}"):
-                break
+            else:
+                if i > 1: break
         
         if not self._keys:
-            # Fallback to single GROQ_API_KEY
             main_key = os.getenv("GROQ_API_KEY")
             if main_key:
                 self._keys = [main_key]
@@ -47,11 +48,29 @@ class GroqClientManager:
             
         return Groq(api_key=key)
 
-    def get_all_keys(self):
-        return self._keys
+class NIMClientManager:
+    _instance = None
+    _api_key = None
+    _base_url = "https://integrate.api.nvidia.com/v1"
 
-# Global manager instance
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(NIMClientManager, cls).__new__(cls)
+            cls._api_key = os.getenv("NVIDIA_API_KEY")
+        return cls._instance
+
+    def get_api_key(self) -> Optional[str]:
+        return self._api_key
+
+    def get_base_url(self) -> str:
+        return self._base_url
+
+# Global manager instances
 groq_manager = GroqClientManager()
+nim_manager = NIMClientManager()
 
 def get_groq_client(rotate: bool = True) -> Optional[Groq]:
     return groq_manager.get_client(rotate)
+
+def get_nim_config():
+    return nim_manager.get_api_key(), nim_manager.get_base_url()

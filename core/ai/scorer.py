@@ -11,8 +11,7 @@ from logger import get_logger
 logger = get_logger("ai.scorer")
 
 try:
-    from groq import Groq
-    from core.ai.client_manager import get_groq_client
+    from core.ai.client_manager import get_groq_client, get_nim_config
     GROQ_AVAILABLE = True
 except ImportError:
     GROQ_AVAILABLE = False
@@ -340,6 +339,45 @@ def score_batch_groq(resume_text: str, jobs: list[dict], retries: int = 3) -> li
     
     return []
 
+def score_batch_nim(resume_text: str, jobs: list[dict]) -> list[dict]:
+    """Score a batch of jobs using NVIDIA NIM (OpenAI-compatible)."""
+    import httpx
+    api_key, base_url = get_nim_config()
+    if not api_key:
+        return []
+    
+    model_name = os.getenv("NIM_MODEL", "mistralai/mistral-large-3-675b-instruct-2512")
+    prompt = BATCH_SCORE_PROMPT.format(
+        resume_text=resume_text,
+        jobs_json=json.dumps(jobs, indent=2)
+    )
+    
+    try:
+        with httpx.Client(timeout=60.0) as client:
+            response = client.post(
+                f"{base_url}/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={
+                    "model": model_name,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "response_format": {"type": "json_object"}
+                }
+            )
+            response.raise_for_status()
+            data = response.json()
+            text = data["choices"][0]["message"]["content"].strip()
+            
+            results = json.loads(text)
+            if isinstance(results, list):
+                return results
+            elif isinstance(results, dict) and "jobs" in results:
+                return results["jobs"]
+            return []
+    except Exception as e:
+        logger.error("NVIDIA NIM batch scoring error: %s", e)
+        return []
+
+
 
 def score_batch_claude(resume_text: str, jobs: list[dict], retries: int = 3) -> list[dict]:
     """Score a batch of jobs together using Anthropic Claude."""
@@ -573,11 +611,20 @@ def score_batch(resume_text: str, jobs: list[dict], batch_size: int = 50, max_wo
                         if on_chunk_complete:
                             on_chunk_complete(results)
                 except Exception as e:
-                    if "rate_limit_exceeded" in str(e).lower() or "429" in str(e):
+                    error_msg = str(e).lower()
+                    if "rate_limit_exceeded" in error_msg or "429" in error_msg or "organization_restricted" in error_msg:
                         _GROQ_EXHAUSTED = True
-                        # Groq failed, try Ollama BATCH for this chunk if available
-                        if best_ollama:
-                            logger.info("Groq batch failed — falling back to Ollama Batch")
+                        logger.warning("Groq service unavailable (Rate limit or Restriction) — falling back to NVIDIA NIM")
+                        
+                        # Pivot chunk to NIM first, then Ollama
+                        results = score_batch_nim(resume_text, chunk)
+                        if results:
+                            for res in results:
+                                scored_jobs_map[res.get("id")] = res
+                            if on_chunk_complete:
+                                on_chunk_complete(results)
+                        elif best_ollama:
+                            logger.info("NIM failed or not configured — falling back to Ollama Batch")
                             ollama_sub_chunks = [chunk[j:j+5] for j in range(0, len(chunk), 5)]
                             for sub_chunk in ollama_sub_chunks:
                                 results = score_batch_ollama(resume_text, sub_chunk, best_ollama)
@@ -587,24 +634,35 @@ def score_batch(resume_text: str, jobs: list[dict], batch_size: int = 50, max_wo
                                     if on_chunk_complete:
                                         on_chunk_complete(results)
                         else:
-                            logger.warning("Groq batch failed and Ollama not available.")
+                            logger.warning("Groq batch failed and NIM/Ollama not available.")
                     else:
                         logger.error("Parallel batch scoring failed for a chunk: %s", e)
 
-    # 3. Final Cleanup: If any jobs are still unscored, do ONE final Ollama batch if available
+    # 3. Final Cleanup: If any jobs are still unscored, try NIM first then Ollama
     unscored_jobs = [j for j in jobs if j.get("id") not in scored_jobs_map]
-    if unscored_jobs and best_ollama:
-        logger.info("Final Cleanup: Scoring %d remaining jobs via Ollama Batch", len(unscored_jobs))
-        for i in range(0, len(unscored_jobs), 5):
-            chunk = unscored_jobs[i:i+5]
-            results = score_batch_ollama(resume_text, chunk, best_ollama)
-            if results:
-                for res in results:
-                    scored_jobs_map[res.get("id")] = res
-                if on_chunk_complete:
-                    on_chunk_complete(results)
-    elif unscored_jobs:
-        logger.warning("Final Cleanup: %d jobs remain unscored and no local fallback available.", len(unscored_jobs))
+    if unscored_jobs:
+        # Try NIM first
+        results = score_batch_nim(resume_text, unscored_jobs)
+        if results:
+            for res in results:
+                scored_jobs_map[res.get("id")] = res
+            if on_chunk_complete:
+                on_chunk_complete(results)
+        
+        # Then Ollama for anything still left
+        final_unscored = [j for j in jobs if j.get("id") not in scored_jobs_map]
+        if final_unscored and best_ollama:
+            logger.info("Final Cleanup: Scoring %d remaining jobs via Ollama Batch", len(final_unscored))
+            for i in range(0, len(final_unscored), 5):
+                chunk = final_unscored[i:i+5]
+                results = score_batch_ollama(resume_text, chunk, best_ollama)
+                if results:
+                    for res in results:
+                        scored_jobs_map[res.get("id")] = res
+                    if on_chunk_complete:
+                        on_chunk_complete(results)
+            if final_unscored and not best_ollama:
+                logger.warning("Final Cleanup: %d jobs remain unscored and no local fallback available.", len(final_unscored))
 
     # Assemble final list
     final_jobs = []

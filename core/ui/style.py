@@ -136,16 +136,43 @@ def apply_custom_style():
     </style>
     """, unsafe_allow_html=True)
 
-def get_resume_path():
-    """Dynamically detect the first available resume in the resume/ directory."""
+def get_resume_path(mode="score", job_type="EU"):
+    """
+    Dynamically detect the resume path based on mode and job type.
+    mode: "score" (Full Resumes) or "apply" (To apply with)
+    job_type: "EU", "IN", or "remote_contractual"
+    """
     from pathlib import Path
-    resume_dir = Path("resume")
+    
+    # Map mode to folder
+    folder_map = {
+        "score": "Full Resumes",
+        "apply": "To apply with"
+    }
+    subfolder = folder_map.get(mode, "Full Resumes")
+    resume_dir = Path("resume") / subfolder
+    
     if not resume_dir.exists():
         return None
+        
+    # Search for files matching the job_type in their name
+    pattern = f"*{job_type}*"
+    for ext in [".docx", ".pdf", ".txt"]:
+        matches = list(resume_dir.glob(f"{pattern}{ext}"))
+        if matches:
+            # Prefer non-temp files if possible
+            valid_matches = [m for m in matches if not m.name.startswith("~$")]
+            if valid_matches:
+                return str(valid_matches[0])
+                
+    # Fallback: if no specific match, try any resume in that folder
     for ext in [".docx", ".pdf", ".txt"]:
         match = list(resume_dir.glob(f"*{ext}"))
         if match:
-            return str(match[0])
+            valid_matches = [m for m in match if not m.name.startswith("~$")]
+            if valid_matches:
+                return str(valid_matches[0])
+                
     return None
 
 def safe_score(score_val):
