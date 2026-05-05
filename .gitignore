@@ -28,8 +28,8 @@ ehthumbs.db
 Thumbs.db
 
 # Project specific ignores
-resume/*.pdf
-resume/*.docx
+# resume/*.pdf
+# resume/*.docx
 *.png
 *.html
 *.jpg
