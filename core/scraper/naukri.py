@@ -39,44 +39,19 @@ class NaukriScraper(BaseJobScraper):
     def _search_playwright(self, role: str, location: str, experience: int, max_pages: int) -> list[Job]:
         """Scrape Naukri search results using Playwright."""
         jobs = []
-        cdp_url = "http://localhost:9222"
 
         try:
+            from .browser_utils import get_browser_context
             with sync_playwright() as p:
-                owned_browser = False
-                browser = None
+                context = get_browser_context(p, headless=False)
+                page = context.pages[0] if context.pages else context.new_page()
+
                 try:
-                    browser = p.chromium.connect_over_cdp(cdp_url)
-                    logger.info("Connected to existing Chrome via CDP at %s", cdp_url)
-                    context = browser.contexts[0] if browser.contexts else browser.new_context()
-                    page = context.new_page()
-                except Exception as e:
-                    logger.debug("CDP connect failed (%s) — launching persistent context browser", e)
-                    user_data_dir = os.path.join(os.getcwd(), "data", "browser_session")
-                    os.makedirs(user_data_dir, exist_ok=True)
-
-                    browser_context = p.chromium.launch_persistent_context(
-                        user_data_dir=user_data_dir,
-                        headless=False,
-                        user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-                        locale="en-US",
-                        viewport={"width": 1280, "height": 800},
-                        args=[
-                            "--disable-blink-features=AutomationControlled",
-                            "--no-sandbox",
-                            "--disable-infobars",
-                        ],
-                        ignore_default_args=["--enable-automation"],
-                    )
-                    owned_browser = True
-                    page = browser_context.pages[0] if browser_context.pages else browser_context.new_page()
-
-                    try:
-                        from playwright_stealth import stealth_sync
-                        stealth_sync(page)
-                        logger.info("Stealth mode enabled for Naukri scraper")
-                    except ImportError:
-                        pass
+                    from playwright_stealth import stealth_sync
+                    stealth_sync(page)
+                    logger.info("Stealth mode enabled for Naukri scraper")
+                except ImportError:
+                    pass
 
                 for pg in range(1, max_pages + 1):
                     # Naukri SRP URL format: /python-jobs?k=python&l=india&experience=3&nignbevent_src=jobsearchDesk
@@ -110,13 +85,7 @@ class NaukriScraper(BaseJobScraper):
                         break
                     jobs.extend(page_jobs)
 
-                if owned_browser:
-                    if "browser_context" in locals():
-                        browser_context.close()
-                    elif browser:
-                        browser.close()
-                else:
-                    page.close()
+                page.close()
 
         except Exception as e:
             logger.error("Playwright Naukri scrape failed: %s", e, exc_info=True)

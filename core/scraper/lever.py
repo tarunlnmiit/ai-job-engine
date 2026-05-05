@@ -1,7 +1,8 @@
-import httpx
+import hashlib
 from datetime import datetime
 from .base import BaseJobScraper, Job
 from logger import get_logger
+from playwright.sync_api import sync_playwright
 
 logger = get_logger("scraper.lever")
 
@@ -19,70 +20,84 @@ LEVER_COMPANIES = [
 ]
 
 class LeverScraper(BaseJobScraper):
-    """Scrape jobs from Lever boards via public API."""
+    """Scrape jobs from Lever boards using Playwright to connect to existing Chrome."""
 
     def search(self, role: str, location: str = None, **kwargs) -> list[Job]:
-        """Search Lever boards for jobs using the public API."""
-        logger.info("Lever API search: role=%r location=%r — checking %d companies", role, location, len(LEVER_COMPANIES))
+        logger.info("Lever scraper: role=%r location=%r — checking %d companies", role, location, len(LEVER_COMPANIES))
         
         all_jobs = []
-        for company in LEVER_COMPANIES:
-            try:
-                company_jobs = self._scrape_company_api(company, role, location)
-                all_jobs.extend(company_jobs)
-            except Exception as e:
-                logger.error("Error scraping %s from Lever API: %s", company, e)
+        try:
+            from .browser_utils import get_browser_context
+            with sync_playwright() as p:
+                context = get_browser_context(p, headless=False)
+                
+                for company in LEVER_COMPANIES:
+                    try:
+                        company_jobs = self._scrape_company(context, company, role, location)
+                        all_jobs.extend(company_jobs)
+                        logger.debug("Lever: Finished %s, total jobs: %d", company, len(all_jobs))
+                    except Exception as e:
+                        logger.error("Error scraping %s from Lever: %s", company, e)
 
-        logger.info("Lever API scrape complete — %d jobs found", len(all_jobs))
+        except Exception as e:
+            logger.error("Lever scraper fatal error: %s", e)
+
+        logger.info("Lever scrape complete — %d jobs found", len(all_jobs))
         return all_jobs
 
-    def _scrape_company_api(self, company: str, role: str, location_filter: str = None) -> list[Job]:
-        url = f"https://api.lever.co/v0/postings/{company}"
+    def _scrape_company(self, context, company: str, role: str, location_filter: str = None) -> list[Job]:
+        page = context.new_page()
+        url = f"https://jobs.lever.co/{company}"
+        
         try:
-            r = httpx.get(url, timeout=15)
-            if r.status_code != 200:
-                return []
-
-            data = r.json()
+            page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            # Wait for job listings
+            page.wait_for_selector(".posting", timeout=10000)
+            
+            postings = page.query_selector_all(".posting")
             jobs = []
-            for j in data:
-                title = j.get("text", "")
+            
+            for post in postings:
+                title_elem = post.query_selector("h5")
+                if not title_elem: continue
+                
+                title = title_elem.inner_text().strip()
                 if role.lower() not in title.lower():
                     continue
-
-                # Location parsing
-                categories = j.get("categories", {})
-                job_location = categories.get("location", "Remote")
-                commitment = categories.get("commitment", "")
-                team = categories.get("team", "")
                 
-                # Workplace type
-                workplace = j.get("workplaceType", "").lower()
-                is_remote = workplace == "remote" or "remote" in job_location.lower()
-
-                # Location filter
+                # Metadata (location, team, commitment)
+                loc_elem = post.query_selector(".sort-by-location")
+                team_elem = post.query_selector(".sort-by-team")
+                commit_elem = post.query_selector(".sort-by-commitment")
+                
+                job_location = loc_elem.inner_text().strip() if loc_elem else "Remote"
+                team = team_elem.inner_text().strip() if team_elem else ""
+                commitment = commit_elem.inner_text().strip() if commit_elem else ""
+                
+                # Filter by location
                 if location_filter and location_filter.lower() not in ("remote", "anywhere"):
-                    if location_filter.lower() not in job_location.lower() and not is_remote:
+                    if location_filter.lower() not in job_location.lower() and "remote" not in job_location.lower():
                         continue
 
+                apply_url = post.query_selector("a.posting-title")
+                href = apply_url.get_attribute("href") if apply_url else ""
+                
                 job = Job(
-                    id=f"lever_{j.get('id')}",
+                    id=f"lever_{company}_{hashlib.md5(title.encode()).hexdigest()[:8]}",
                     title=title,
-                    company=company.replace("-", " ").title(),
+                    company=company.title(),
                     location=job_location,
-                    description=j.get("descriptionHtml", "") + "\n" + j.get("additional", ""),
-                    skills_required=[],
+                    description=f"Job at {company} - {team} ({commitment})",
                     platform="lever",
-                    application_url=j.get("applyUrl", ""),
-                    is_easy_apply=False,
-                    is_remote=is_remote,
-                    salary=None,
-                    posted_date=datetime.fromtimestamp(j.get("createdAt", 0) / 1000).isoformat() if j.get("createdAt") else None,
-                    experience_required=None,
+                    application_url=href,
+                    is_remote="remote" in job_location.lower() or "remote" in commitment.lower(),
                     date_found=datetime.now().isoformat()
                 )
                 jobs.append(job)
+            
+            page.close()
             return jobs
         except Exception as e:
-            logger.warning("Lever API error for %s: %s", company, e)
+            logger.debug("Lever: No jobs found or timeout for %s", company)
+            page.close()
             return []

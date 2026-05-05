@@ -41,40 +41,14 @@ class IndeedScraper(BaseJobScraper):
             return []
 
         jobs = []
-        cdp_url = "http://localhost:9222"
 
         try:
+            from .browser_utils import get_browser_context
             with sync_playwright() as p:
-                # Try connecting to existing Chrome with real profile first
-                owned_browser = False
-                browser = None
+                context = get_browser_context(p, headless=False)
+                page = context.pages[0] if context.pages else context.new_page()
+
                 try:
-                    browser = p.chromium.connect_over_cdp(cdp_url)
-                    logger.info("Connected to existing Chrome via CDP at %s", cdp_url)
-                    context = browser.contexts[0] if browser.contexts else browser.new_context()
-                    page = context.new_page()
-                except Exception as e:
-                    logger.warning("CDP connect failed (%s) — launching persistent context browser", e)
-                    user_data_dir = os.path.join(os.getcwd(), "data", "browser_session")
-                    os.makedirs(user_data_dir, exist_ok=True)
-                    
-                    browser_context = p.chromium.launch_persistent_context(
-                        user_data_dir=user_data_dir,
-                        headless=False,
-                        user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-                        locale="en-US",
-                        viewport={"width": 1280, "height": 800},
-                        args=[
-                            "--disable-blink-features=AutomationControlled",
-                            "--no-sandbox",
-                            "--disable-infobars"
-                        ],
-                        ignore_default_args=["--enable-automation"]
-                    )
-                    owned_browser = True
-                    page = browser_context.pages[0] if browser_context.pages else browser_context.new_page()
-                    
-                    # Apply stealth to bypass Cloudflare
                     try:
                         from playwright_stealth import stealth_sync
                         stealth_sync(page)

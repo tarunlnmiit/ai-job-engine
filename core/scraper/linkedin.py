@@ -32,19 +32,11 @@ class LinkedInScraper(BaseJobScraper):
             return []
 
         jobs = []
-        cdp_url = "http://localhost:9222"
 
         try:
+            from .browser_utils import get_browser_context
             with sync_playwright() as p:
-                browser = None
-                try:
-                    browser = p.chromium.connect_over_cdp(cdp_url)
-                    logger.info("LinkedIn: Connected to existing Chrome via CDP")
-                    context = browser.contexts[0] if browser.contexts else browser.new_context()
-                except Exception as e:
-                    logger.warning("LinkedIn: CDP connect failed (%s) — please start Chrome with --remote-debugging-port=9222", e)
-                    return []
-
+                context = get_browser_context(p, headless=False)
                 page = context.new_page()
                 
                 # Apply filters via URL

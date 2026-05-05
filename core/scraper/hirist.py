@@ -32,22 +32,14 @@ class HiristScraper(BaseJobScraper):
         return jobs
 
     def _search_playwright(self, role: str, location: str, max_pages: int) -> list[Job]:
-        if not BS_AVAILABLE:
-            return []
-
+        """Scrape Hirist search results using Playwright."""
         jobs = []
-        cdp_url = "http://localhost:9222"
 
         try:
+            from .browser_utils import get_browser_context
             with sync_playwright() as p:
-                try:
-                    browser = p.chromium.connect_over_cdp(cdp_url)
-                    context = browser.contexts[0]
-                    page = context.new_page()
-                except Exception as e:
-                    logger.warning("Could not connect to CDP, launching fresh browser: %s", e)
-                    browser = p.chromium.launch(headless=True)
-                    page = browser.new_page()
+                context = get_browser_context(p, headless=False)
+                page = context.pages[0] if context.pages else context.new_page()
 
                 # Hirist search URL format: https://www.hirist.com/search/{role}-{location}.html
                 # Replace spaces with hyphens
