@@ -13,6 +13,13 @@ from .hirist import HiristScraper
 from .relocateme import RelocateMeScraper
 from .thehub import TheHubScraper
 from .arbeitnow import ArbeitNowScraper
+from .uplers import UplersScraper
+from .braintrust import BraintrustScraper
+from .andela import AndelaScraper
+from .arc_dev import ArcDevScraper
+from .mercor import MercorScraper
+from .turing import TuringScraper
+from .pro5 import Pro5Scraper
 
 # Chrome DevTools variants (visible automation for debugging)
 from .linkedin_devtools import LinkedInScraperDevTools, LinkedInScraperHybrid
@@ -36,6 +43,13 @@ __all__ = [
     "RelocateMeScraper",
     "TheHubScraper",
     "ArbeitNowScraper",
+    "UplersScraper",
+    "BraintrustScraper",
+    "AndelaScraper",
+    "ArcDevScraper",
+    "MercorScraper",
+    "TuringScraper",
+    "Pro5Scraper",
 ]
 
 # To use visible LinkedIn automation, uncomment:

@@ -1,7 +1,13 @@
 import os
 from typing import Optional
-from groq import Groq
 from logger import get_logger
+
+try:
+    from groq import Groq
+    GROQ_SDK_AVAILABLE = True
+except ImportError:
+    Groq = None
+    GROQ_SDK_AVAILABLE = False
 
 logger = get_logger("ai.client_manager")
 
@@ -36,8 +42,8 @@ class GroqClientManager:
         
         logger.info("Loaded %d Groq API keys for rotation", len(self._keys))
 
-    def get_client(self, rotate: bool = True) -> Optional[Groq]:
-        if not self._keys:
+    def get_client(self, rotate: bool = True) -> Optional['Groq']:
+        if not self._keys or Groq is None:
             return None
         
         if rotate:

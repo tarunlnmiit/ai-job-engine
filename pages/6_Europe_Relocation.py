@@ -34,7 +34,7 @@ with st.sidebar:
     st.header("👤 Your EU Profile")
     has_german_degree = st.toggle("Master's from German University", value=True)
     has_previous_blue_card = st.toggle("Previous EU Blue Card Holder", value=True)
-    german_work_exp = st.number_input("Years of Work Exp in Germany", value=2.0, step=0.5)
+    german_work_exp = st.number_input("Years of Work Exp in Germany", value=5.0, step=0.5)
     
     st.info("These settings will be used by the AI Scorer to prioritize German/EU opportunities.")
     

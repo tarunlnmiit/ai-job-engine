@@ -30,6 +30,7 @@ df = pd.DataFrame(jobs)
 with st.sidebar:
     st.header("🔍 Refine Results")
     search_query = st.text_input("Search Role/Company", "")
+    job_category = st.selectbox("Job Category", ["All", "India Fulltime", "EU Fulltime", "Remote Contractual"])
     min_score = st.slider("Min Match Score %", 0, 100, 40)
     
     statuses = ["new", "potential_duplicate", "applied", "manual_required", "interview", "rejected"]
@@ -40,6 +41,24 @@ with st.sidebar:
 
 # --- Apply Filters ---
 filtered_df = df.copy()
+
+contract_plats = ["uplers", "braintrust", "andela", "arc_dev", "mercor", "turing", "pro5"]
+eu_plats = ["relocateme", "thehub", "arbeitnow"]
+eu_countries = "Germany|Netherlands|Luxembourg|France|Denmark|Norway|Sweden|Finland|Switzerland|UK|Europe"
+
+if job_category == "Remote Contractual":
+    filtered_df = filtered_df[filtered_df["Platform"].isin(contract_plats)]
+elif job_category == "EU Fulltime":
+    filtered_df = filtered_df[
+        filtered_df["Platform"].isin(eu_plats) |
+        filtered_df["Location"].str.contains(eu_countries, case=False, na=False)
+    ]
+elif job_category == "India Fulltime":
+    filtered_df = filtered_df[
+        ~filtered_df["Platform"].isin(contract_plats + eu_plats) &
+        ~filtered_df["Location"].str.contains(eu_countries, case=False, na=False)
+    ]
+
 if search_query:
     filtered_df = filtered_df[filtered_df["Role"].str.contains(search_query, case=False, na=False) | filtered_df["Company"].str.contains(search_query, case=False, na=False)]
 if selected_platforms:

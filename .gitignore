@@ -42,6 +42,7 @@ Thumbs.db
 .gemini/
 
 # Browser Automation Data
+chrome_user_data/
 chatgpt_user_data/
 twitter_user_data/
 playwright-log.txt
