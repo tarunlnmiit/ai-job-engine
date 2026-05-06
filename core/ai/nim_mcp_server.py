@@ -1,6 +1,6 @@
 import os
 import json
-import httpx
+import requests
 import sys
 from typing import Dict, Any
 
@@ -41,22 +41,50 @@ def main():
                     model = args.get("model", "mistralai/mistral-large-3-675b-instruct-2512")
                     prompt = args["prompt"]
                     
-                    with httpx.Client(timeout=60.0) as client:
-                        resp = client.post(
-                            "https://integrate.api.nvidia.com/v1/chat/completions",
-                            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                            json={
-                                "model": model,
-                                "messages": [{"role": "user", "content": prompt}]
-                            }
-                        )
-                        resp.raise_for_status()
-                        data = resp.json()
-                        content = data["choices"][0]["message"]["content"]
-                        print(json.dumps({"result": {"content": [{"type": "text", "text": content}]}}))
+                    invoke_url = "https://integrate.api.nvidia.com/v1/chat/completions"
+                    headers = {
+                        "Authorization": f"Bearer {api_key}",
+                        "Accept": "text/event-stream",
+                    }
+                    payload = {
+                        "model": model,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "max_tokens": 2048,
+                        "temperature": 0.15,
+                        "top_p": 1.00,
+                        "frequency_penalty": 0.00,
+                        "presence_penalty": 0.00,
+                        "stream": True,
+                    }
+                    
+                    resp = requests.post(invoke_url, headers=headers, json=payload, stream=True, timeout=60)
+                    resp.raise_for_status()
+                    
+                    # Accumulate streamed SSE content
+                    full_content = []
+                    for resp_line in resp.iter_lines():
+                        if not resp_line:
+                            continue
+                        decoded = resp_line.decode("utf-8")
+                        if decoded.startswith("data: "):
+                            data_str = decoded[6:]
+                            if data_str.strip() == "[DONE]":
+                                break
+                            try:
+                                chunk = json.loads(data_str)
+                                delta = chunk.get("choices", [{}])[0].get("delta", {})
+                                piece = delta.get("content", "")
+                                if piece:
+                                    full_content.append(piece)
+                            except json.JSONDecodeError:
+                                continue
+                    
+                    content = "".join(full_content)
+                    print(json.dumps({"result": {"content": [{"type": "text", "text": content}]}}))
             sys.stdout.flush()
         except Exception as e:
             pass
 
 if __name__ == "__main__":
     main()
+

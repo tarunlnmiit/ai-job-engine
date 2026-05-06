@@ -346,64 +346,90 @@ def score_batch_groq(resume_text: str, jobs: list[dict], retries: int = 3) -> li
     return []
 
 def score_batch_nim(resume_text: str, jobs: list[dict]) -> list[dict]:
-    """Score a batch of jobs using NVIDIA NIM (OpenAI-compatible)."""
+    """Score a batch of jobs using NVIDIA NIM (streaming SSE)."""
     if not NIM_AVAILABLE:
         logger.debug("NIM client not available — skipping")
         return []
-    import httpx
+    import requests as req
+
     api_key, base_url = get_nim_config()
     if not api_key:
         return []
-    
+
     model_name = os.getenv("NIM_MODEL", "mistralai/mistral-large-3-675b-instruct-2512")
     actual_resume_data = PRE_PARSED_SKILLS if PRE_PARSED_SKILLS else resume_text
     prompt = BATCH_SCORE_PROMPT.format(
         resume_text=actual_resume_data,
         jobs_json=json.dumps(jobs, indent=2)
     )
-    
+
+    invoke_url = f"{base_url}/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Accept": "text/event-stream",
+    }
+    payload = {
+        "model": model_name,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 4096,
+        "temperature": 0.15,
+        "top_p": 1.00,
+        "frequency_penalty": 0.00,
+        "presence_penalty": 0.00,
+        "stream": True,
+    }
+
     for attempt in range(2):
         try:
-            with httpx.Client(timeout=300.0) as client:
-                response = client.post(
-                    f"{base_url}/chat/completions",
-                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                    json={
-                        "model": model_name,
-                        "messages": [{"role": "user", "content": prompt}],
-                        "max_tokens": 4096,
-                        "temperature": 0.15,
-                        "top_p": 1.00,
-                        "frequency_penalty": 0.00,
-                        "presence_penalty": 0.00,
-                        "stream": False
-                    }
-                )
-                response.raise_for_status()
-                data = response.json()
-                text = data["choices"][0]["message"]["content"].strip()
-                
-                # Extract JSON from markdown if needed
-                if "```" in text:
-                    text = text.split("```")[1]
-                    if text.startswith("json"):
-                        text = text[4:]
-                
-                # Find JSON array boundaries
-                start_idx = text.find('[')
-                end_idx = text.rfind(']')
-                if start_idx != -1 and end_idx != -1:
-                    text = text[start_idx:end_idx+1]
-                
-                results = json.loads(text)
-                if isinstance(results, list):
-                    return results
-                elif isinstance(results, dict):
-                    # Model may wrap in "jobs", "matches", "results", etc.
-                    for key in results:
-                        if isinstance(results[key], list):
-                            return results[key]
-                return []
+            logger.info("⚡ Calling NVIDIA NIM (%s) for batch of %d jobs (streaming, attempt %d/2)...", model_name, len(jobs), attempt + 1)
+            t0 = time.time()
+            response = req.post(invoke_url, headers=headers, json=payload, stream=True, timeout=300)
+            response.raise_for_status()
+
+            # Accumulate streamed content from SSE chunks
+            full_content = []
+            for line in response.iter_lines():
+                if not line:
+                    continue
+                decoded = line.decode("utf-8")
+                if decoded.startswith("data: "):
+                    data_str = decoded[6:]
+                    if data_str.strip() == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data_str)
+                        delta = chunk.get("choices", [{}])[0].get("delta", {})
+                        content_piece = delta.get("content", "")
+                        if content_piece:
+                            full_content.append(content_piece)
+                    except json.JSONDecodeError:
+                        continue
+
+            elapsed = time.time() - t0
+            text = "".join(full_content).strip()
+            logger.info("✅ NVIDIA NIM streaming complete in %.2fs — response length: %d chars", elapsed, len(text))
+
+            # Clean up markdown fences if present
+            if "```" in text:
+                text = text.split("```")[1]
+                if text.startswith("json"):
+                    text = text[4:]
+
+            # Find JSON array boundaries
+            start_idx = text.find('[')
+            end_idx = text.rfind(']')
+            if start_idx != -1 and end_idx != -1:
+                text = text[start_idx:end_idx+1]
+
+            results = json.loads(text)
+            if isinstance(results, list):
+                return results
+            elif isinstance(results, dict):
+                # Model may wrap in "jobs", "matches", "results", etc.
+                for key in results:
+                    if isinstance(results[key], list):
+                        return results[key]
+            return []
         except Exception as e:
             logger.error("NVIDIA NIM batch scoring error (attempt %d/2): %s", attempt + 1, e)
             if attempt < 1:
