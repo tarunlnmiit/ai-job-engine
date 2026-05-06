@@ -355,7 +355,7 @@ def score_batch_nim(resume_text: str, jobs: list[dict]) -> list[dict]:
     if not api_key:
         return []
     
-    model_name = os.getenv("NIM_MODEL", "mistralai/mixtral-8x22b-instruct-v0.1")
+    model_name = os.getenv("NIM_MODEL", "mistralai/mistral-large-3-675b-instruct-2512")
     actual_resume_data = PRE_PARSED_SKILLS if PRE_PARSED_SKILLS else resume_text
     prompt = BATCH_SCORE_PROMPT.format(
         resume_text=actual_resume_data,
@@ -364,7 +364,7 @@ def score_batch_nim(resume_text: str, jobs: list[dict]) -> list[dict]:
     
     for attempt in range(2):
         try:
-            with httpx.Client(timeout=120.0) as client:
+            with httpx.Client(timeout=300.0) as client:
                 response = client.post(
                     f"{base_url}/chat/completions",
                     headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
@@ -372,6 +372,11 @@ def score_batch_nim(resume_text: str, jobs: list[dict]) -> list[dict]:
                         "model": model_name,
                         "messages": [{"role": "user", "content": prompt}],
                         "max_tokens": 4096,
+                        "temperature": 0.15,
+                        "top_p": 1.00,
+                        "frequency_penalty": 0.00,
+                        "presence_penalty": 0.00,
+                        "stream": False
                     }
                 )
                 response.raise_for_status()
