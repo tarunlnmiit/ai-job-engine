@@ -80,13 +80,7 @@ class WellfoundScraper(BaseJobScraper):
                 logger.info("Wellfound: found %d jobs", len(page_jobs))
                 jobs.extend(page_jobs)
 
-                if owned_browser:
-                    if "browser_context" in locals():
-                        browser_context.close()
-                    elif browser:
-                        browser.close()
-                else:
-                    page.close()
+                page.close()
 
         except Exception as e:
             logger.error("Wellfound Playwright scrape failed: %s", e, exc_info=True)

@@ -12,7 +12,7 @@ logger = get_logger("ai.scorer")
 
 try:
     from core.ai.client_manager import get_groq_client
-    GROQ_AVAILABLE = True
+    GROQ_AVAILABLE = False
 except ImportError:
     GROQ_AVAILABLE = False
 
@@ -24,7 +24,7 @@ except ImportError:
 
 try:
     import ollama
-    OLLAMA_AVAILABLE = True
+    OLLAMA_AVAILABLE = False
 except ImportError:
     OLLAMA_AVAILABLE = False
 
@@ -90,7 +90,7 @@ except FileNotFoundError:
 
 
 
-_GROQ_EXHAUSTED = False
+_GROQ_EXHAUSTED = True
 
 
 def score_job_groq(resume_text: str, job_description: str, retries: int = 1) -> Optional[dict]:
@@ -398,11 +398,14 @@ def score_batch_nim(resume_text: str, jobs: list[dict]) -> list[dict]:
                         break
                     try:
                         chunk = json.loads(data_str)
-                        delta = chunk.get("choices", [{}])[0].get("delta", {})
+                        choices = chunk.get("choices", [])
+                        if not choices:
+                            continue
+                        delta = choices[0].get("delta", {})
                         content_piece = delta.get("content", "")
                         if content_piece:
                             full_content.append(content_piece)
-                    except json.JSONDecodeError:
+                    except (json.JSONDecodeError, IndexError, KeyError):
                         continue
 
             elapsed = time.time() - t0
@@ -597,7 +600,7 @@ def score_batch(resume_text: str, jobs: list[dict], batch_size: int = 50, max_wo
     best_ollama = benchmark_ollama_models()
     
     # 1. Score all jobs via NVIDIA NIM (Mistral)
-    nim_batch_size = 5
+    nim_batch_size = int(os.getenv("NIM_BATCH_SIZE", "5"))
     logger.info("Starting NVIDIA NIM batch scoring — %d jobs in chunks of %d", len(jobs), nim_batch_size)
     
     chunks = [jobs[i:i + nim_batch_size] for i in range(0, len(jobs), nim_batch_size)]

@@ -43,7 +43,7 @@ with st.sidebar:
 filtered_df = df.copy()
 
 contract_plats = ["uplers", "braintrust", "andela", "arc_dev", "mercor", "turing", "pro5"]
-eu_plats = ["relocateme", "thehub", "arbeitnow"]
+eu_plats = ["relocateme", "thehub", "arbeitnow", "WorkInLuxembourg"]
 eu_countries = "Germany|Netherlands|Luxembourg|France|Denmark|Norway|Sweden|Finland|Switzerland|UK|Europe"
 
 if job_category == "Remote Contractual":

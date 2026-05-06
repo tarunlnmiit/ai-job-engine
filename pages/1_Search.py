@@ -86,6 +86,7 @@ with col_main:
             max_pages = st.number_input("Depth (Pages per target)", value=config.get("search", {}).get("max_pages", 1), min_value=1, max_value=20)
         with e2:
             remote_ok = st.checkbox("Include Remote Global", value=config.get("search", {}).get("remote_ok", True))
+            skip_scoring = st.checkbox("🚀 Save Only (Skip AI Scoring)", value=False, help="Fast mode: Scrape jobs now and score them later from the Batch Scorer page.")
 
         submitted = st.form_submit_button("🚀 INITIATE GLOBAL SEARCH", width="stretch")
 
@@ -105,6 +106,19 @@ with col_side:
         with st.status("Testing models...") as status:
             fastest = benchmark_ollama_models()
             status.update(label=f"Fastest local model: {fastest or 'None found'}", state="complete")
+    
+    st.divider()
+    st.subheader("⚙️ AI Engine Settings")
+    nim_batch_size = st.slider(
+        "NIM Batch Size (Jobs/req)",
+        min_value=1,
+        max_value=20,
+        value=int(os.getenv("NIM_BATCH_SIZE", "5")),
+        key="nim_batch_size_search"
+    )
+    os.environ["NIM_BATCH_SIZE"] = str(nim_batch_size)
+
+    st.divider()
 
     st.divider()
     st.info("""
@@ -196,26 +210,43 @@ if submitted:
                 status.write(f"⭐ Found {len(all_jobs)} jobs. Commencing AI Scoring...")
                 jobs_dicts = [j.to_dict() if hasattr(j, 'to_dict') else j for j in all_jobs]
                 
-                def on_chunk(chunk):
-                    status.write(f"💾 Saving chunk of {len(chunk)} scored jobs...")
-                    job_obj_map = {j.id if hasattr(j, 'id') else j.get('id'): j for j in all_jobs}
-                    to_save = []
-                    for res in chunk:
-                        orig = job_obj_map.get(res.get("id"))
-                        if not orig: continue
-                        j_dict = orig.to_dict() if hasattr(orig, 'to_dict') else orig.copy()
-                        j_dict.update({"score": int(float(res.get("score", 0))), "matching_skills": res.get("matching_skills", []), "missing_skills": res.get("missing_skills", []), "recommendation": res.get("recommendation", "")})
-                        if j_dict["score"] >= score_threshold: to_save.append(j_dict)
+                if skip_scoring:
+                    status.write(f"💾 Saving {len(all_jobs)} unscored jobs...")
+                    existing = tracker.get_all_jobs()
+                    existing_ids = {str(ej.get("Job ID")) for ej in existing}
                     
-                    if to_save:
-                        deduper = Deduplicator()
-                        existing = tracker.get_all_jobs()
-                        clean, dups = deduper.find_duplicates(to_save, [{"id": ej.get("Job ID"), "title": ej.get("Role"), "company": ej.get("Company")} for ej in existing])
-                        for j in clean + dups:
-                            j["status"] = "new" if j in clean else "potential_duplicate"
-                            db.add_job(j); tracker.update_job(j)
+                    new_count = 0
+                    for job in all_jobs:
+                        j_dict = job.to_dict() if hasattr(job, 'to_dict') else job.copy()
+                        if str(j_dict.get("id")) not in existing_ids:
+                            j_dict["status"] = "new"
+                            j_dict["score"] = "" # Explicitly empty for unscored
+                            db.add_job(j_dict)
+                            tracker.update_job(j_dict)
+                            new_count += 1
+                    status.update(label=f"✅ Saved {new_count} new unscored jobs! (Skipped {len(all_jobs)-new_count} duplicates)", state="complete")
+                else:
+                    def on_chunk(chunk):
+                        status.write(f"💾 Saving chunk of {len(chunk)} scored jobs...")
+                        job_obj_map = {j.id if hasattr(j, 'id') else j.get('id'): j for j in all_jobs}
+                        to_save = []
+                        for res in chunk:
+                            orig = job_obj_map.get(res.get("id"))
+                            if not orig: continue
+                            j_dict = orig.to_dict() if hasattr(orig, 'to_dict') else orig.copy()
+                            j_dict.update({"score": int(float(res.get("score", 0))), "matching_skills": res.get("matching_skills", []), "missing_skills": res.get("missing_skills", []), "recommendation": res.get("recommendation", "")})
+                            if j_dict["score"] >= score_threshold: to_save.append(j_dict)
+                        
+                        if to_save:
+                            deduper = Deduplicator()
+                            existing = tracker.get_all_jobs()
+                            clean, dups = deduper.find_duplicates(to_save, [{"id": ej.get("Job ID"), "title": ej.get("Role"), "company": ej.get("Company")} for ej in existing])
+                            for j in clean + dups:
+                                j["status"] = "new" if j in clean else "potential_duplicate"
+                                db.add_job(j); tracker.update_job(j)
 
-                score_batch(resume_text, jobs_dicts, on_chunk_complete=on_chunk)
+                    score_batch(resume_text, jobs_dicts, on_chunk_complete=on_chunk)
+                    status.update(label=f"✅ Search complete! {len(all_jobs)} processed.", state="complete")
                 status.update(label=f"✅ Search complete! {len(all_jobs)} processed.", state="complete")
             else:
                 status.update(label="⚠️ No jobs found.", state="complete")

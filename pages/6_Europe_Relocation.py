@@ -50,9 +50,19 @@ with st.sidebar:
     
     st.subheader("🛡️ Blue Card Toolkit")
     st.markdown("""
-    - [ArbeitNow Blue Card Guide](https://www.arbeitnow.com/blog/blue-card-germany)
     - [Germany Tax Calculator](https://www.arbeitnow.com/tools/salary-calculator/germany)
     """)
+    
+    st.divider()
+    st.subheader("⚙️ AI Engine Settings")
+    nim_batch_size = st.slider(
+        "NIM Batch Size",
+        min_value=1,
+        max_value=20,
+        value=int(os.getenv("NIM_BATCH_SIZE", "5")),
+        key="nim_batch_size_eu"
+    )
+    os.environ["NIM_BATCH_SIZE"] = str(nim_batch_size)
 
 col_main, col_info = st.columns([2, 1])
 
@@ -79,12 +89,13 @@ with col_main:
         platforms = st.multiselect(
             "Select Europe-focused portals",
             options=[
-                "relocateme", "thehub", "arbeitnow", "linkedin", "greenhouse", "lever", "wellfound"
+                "relocateme", "thehub", "arbeitnow", "workinluxembourg", "linkedin", "greenhouse", "lever", "wellfound"
             ],
-            default=["relocateme", "thehub", "arbeitnow", "linkedin"]
+            default=["relocateme", "thehub", "arbeitnow", "workinluxembourg", "linkedin"]
         )
         
         max_pages = st.number_input("Search Depth (Pages per country)", value=1, min_value=1, max_value=5)
+        skip_scoring = st.checkbox("🚀 Save Only (Skip AI Scoring)", value=False, help="Fast mode: Scrape jobs now and score them later.")
         
         submitted = st.form_submit_button("🚀 INITIATE EUROPEAN MISSION", width="stretch")
 
@@ -107,7 +118,7 @@ if submitted:
         from core.scraper import (
             RelocateMeScraper, TheHubScraper, LinkedInScraper, 
             GreenhouseScraper, LeverScraper, WellfoundScraper,
-            ArbeitNowScraper
+            ArbeitNowScraper, WorkInLuxembourgScraper
         )
         from core.tracker.db import JobCache
         from core.tracker.csv_tracker import CSVTracker
@@ -117,7 +128,7 @@ if submitted:
         scraper_map = {
             "relocateme": RelocateMeScraper, "thehub": TheHubScraper, "linkedin": LinkedInScraper,
             "greenhouse": GreenhouseScraper, "lever": LeverScraper, "wellfound": WellfoundScraper,
-            "arbeitnow": ArbeitNowScraper
+            "arbeitnow": ArbeitNowScraper, "workinluxembourg": WorkInLuxembourgScraper
         }
         
         from core.ui.style import get_resume_path
@@ -161,16 +172,30 @@ if submitted:
             jobs_dicts = [j.to_dict() for j in all_jobs]
             db = JobCache(); tracker = CSVTracker()
             
-            def on_save(results):
-                job_obj_map = {j.id: j for j in all_jobs}
-                for res in results:
-                    orig = job_obj_map.get(res["id"])
-                    if not orig: continue
-                    j_dict = orig.to_dict()
-                    j_dict.update({"score": int(float(res.get("score", 0))), "matching_skills": res.get("matching_skills", []), "missing_skills": res.get("missing_skills", []), "recommendation": res.get("recommendation", "")})
-                    db.add_job(j_dict); tracker.update_job(j_dict)
-            
-            score_batch(resume_text, jobs_dicts, on_chunk_complete=on_save)
-            status.update(label=f"✅ Mission Complete! {len(all_jobs)} jobs processed.", state="complete")
+            if skip_scoring:
+                status.write(f"💾 Saving {len(all_jobs)} unscored jobs...")
+                existing = tracker.get_all_jobs()
+                existing_ids = {str(ej.get("Job ID")) for ej in existing}
+                new_count = 0
+                for job in all_jobs:
+                    if str(job.id) not in existing_ids:
+                        j_dict = job.to_dict()
+                        j_dict["status"] = "new"
+                        j_dict["score"] = ""
+                        db.add_job(j_dict); tracker.update_job(j_dict)
+                        new_count += 1
+                status.update(label=f"✅ Saved {new_count} new unscored jobs!", state="complete")
+            else:
+                def on_save(results):
+                    job_obj_map = {j.id: j for j in all_jobs}
+                    for res in results:
+                        orig = job_obj_map.get(res["id"])
+                        if not orig: continue
+                        j_dict = orig.to_dict()
+                        j_dict.update({"score": int(float(res.get("score", 0))), "matching_skills": res.get("matching_skills", []), "missing_skills": res.get("missing_skills", []), "recommendation": res.get("recommendation", "")})
+                        db.add_job(j_dict); tracker.update_job(j_dict)
+                
+                score_batch(resume_text, jobs_dicts, on_chunk_complete=on_save)
+                status.update(label=f"✅ Mission Complete! {len(all_jobs)} jobs processed.", state="complete")
         else:
             status.update(label="⚠️ No jobs found.", state="complete")

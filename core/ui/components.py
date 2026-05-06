@@ -52,7 +52,7 @@ def render_role_expander(config_key="roles_text"):
                 key=f"{config_key}_exp_input",
             )
 
-        if st.button("Generate Variants", key=f"{config_key}_gen_btn", use_container_width=True):
+        if st.button("Generate Variants", key=f"{config_key}_gen_btn", width="stretch"):
             base_roles = [expand_base_role.strip()] if expand_base_role.strip() else [r.strip() for r in current_roles.split("\n") if r.strip()]
             
             if base_roles:
