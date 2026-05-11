@@ -6,7 +6,7 @@ from typing import Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "..", "..", ".env"), override=True)
 
 from logger import get_logger
 logger = get_logger("ai.scorer")
@@ -88,6 +88,30 @@ try:
 except FileNotFoundError:
     logger.warning("parsed_resume_skills.json not found, falling back to raw resume_text if provided")
     PRE_PARSED_SKILLS = None
+
+
+def _recover_partial_json(text: str) -> list:
+    """Extract complete JSON objects from a truncated array string."""
+    import re
+    objects = []
+    depth = 0
+    start = None
+    for i, ch in enumerate(text):
+        if ch == '{':
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0 and start is not None:
+                try:
+                    objects.append(json.loads(text[start:i + 1]))
+                except json.JSONDecodeError:
+                    pass
+                start = None
+    if objects:
+        logger.warning("NIM JSON truncated — recovered %d/%d objects via partial parse", len(objects), text.count('"id"'))
+    return objects
 
 
 
@@ -378,7 +402,7 @@ def score_batch_nim(resume_text: str, jobs: list[dict]) -> list[dict]:
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.15,
                 top_p=1,
-                max_tokens=4096,
+                max_tokens=8192,
                 stream=True,
             )
 
@@ -408,7 +432,11 @@ def score_batch_nim(resume_text: str, jobs: list[dict]) -> list[dict]:
             if start_idx != -1 and end_idx != -1:
                 text = text[start_idx:end_idx + 1]
 
-            results = json.loads(text)
+            try:
+                results = json.loads(text)
+            except json.JSONDecodeError:
+                results = _recover_partial_json(text)
+
             if isinstance(results, list):
                 logger.info("NIM parsed %d scored results", len(results))
                 return results
@@ -589,13 +617,13 @@ def score_batch_openrouter(resume_text: str, jobs: list[dict]) -> list[dict]:
     """Score batch via OpenRouter free models with automatic fallback on 429."""
     api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key or "your_" in api_key:
-        logger.debug("OPENROUTER_API_KEY not set — skipping")
+        logger.warning("OPENROUTER_API_KEY missing or placeholder — skipping OpenRouter")
         return []
 
     try:
         from openai import OpenAI, RateLimitError
     except ImportError:
-        logger.debug("openai SDK not installed — skipping OpenRouter")
+        logger.warning("openai SDK not installed — skipping OpenRouter (pip install openai)")
         return []
 
     client = OpenAI(api_key=api_key, base_url="https://openrouter.ai/api/v1")
@@ -630,7 +658,7 @@ def score_batch_openrouter(resume_text: str, jobs: list[dict]) -> list[dict]:
                 )
                 elapsed = time.time() - t0
                 text = (resp.choices[0].message.content or "").strip()
-                logger.info("✅ OpenRouter (%s) done in %.2fs — %d chars", model, elapsed, len(text))
+                logger.info("✅ OpenRouter (%s) done in %.2fs — %d chars | preview: %.100s", model, elapsed, len(text), text)
 
                 if "```" in text:
                     text = text.split("```")[1]
@@ -641,15 +669,26 @@ def score_batch_openrouter(resume_text: str, jobs: list[dict]) -> list[dict]:
                 end_idx = text.rfind("]")
                 if start_idx != -1 and end_idx != -1:
                     text = text[start_idx:end_idx + 1]
+                else:
+                    logger.warning("OpenRouter (%s) — no JSON array found in response: %.200s", model, text)
+                    break
 
                 results = json.loads(text)
                 if isinstance(results, list):
                     return results
                 elif isinstance(results, dict):
-                    for key in results:
-                        if isinstance(results[key], list):
-                            return results[key]
-                return []
+                    # OpenRouter error envelope: {"error": {"message": ..., "code": ...}}
+                    if "error" in results:
+                        logger.error("OpenRouter (%s) API error: %s", model, results["error"])
+                        break
+                    for k in results:
+                        if isinstance(results[k], list):
+                            return results[k]
+                    logger.warning("OpenRouter (%s) dict has no list value — keys: %s", model, list(results.keys()))
+                    break
+            except json.JSONDecodeError as e:
+                logger.error("OpenRouter (%s) JSON parse failed: %s — raw: %.300s", model, e, text)
+                break
             except RateLimitError:
                 if attempt == 0:
                     logger.warning("OpenRouter 429 on %s — retrying after 3s...", model)
@@ -752,7 +791,7 @@ def score_batch(resume_text: str, jobs: list[dict], batch_size: int = 50, max_wo
                     scored_by[jid] = "Ollama"
                     ollama_count += 1
                 if on_chunk_complete:
-                    on_chunk_complete(results)
+                    on_chunk_complete(results, scorer="Ollama")
         still_unscored = [j for j in jobs if j.get("id") not in scored_jobs_map]
         logger.info("Ollama scored %d | still unscored: %d", ollama_count, len(still_unscored))
     elif unscored_jobs:
