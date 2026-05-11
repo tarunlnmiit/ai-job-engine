@@ -21,6 +21,9 @@ from .mercor import MercorScraper
 from .turing import TuringScraper
 from .pro5 import Pro5Scraper
 from .workinluxembourg import WorkInLuxembourgScraper
+# from .make_it_in_germany import MakeItInGermanyScraper
+# from .work_in_denmark import WorkInDenmarkScraper
+# from .eures import EURESScraper
 
 
 # Chrome DevTools variants (visible automation for debugging)
@@ -53,6 +56,9 @@ __all__ = [
     "TuringScraper",
     "Pro5Scraper",
     "WorkInLuxembourgScraper",
+    "MakeItInGermanyScraper",
+    "WorkInDenmarkScraper",
+    "EURESScraper",
 ]
 
 # To use visible LinkedIn automation, uncomment:
