@@ -39,7 +39,7 @@ class TheHubScraper(BaseJobScraper):
         try:
             from .browser_utils import get_browser_context
             with sync_playwright() as p:
-                context = get_browser_context(p, headless=False)
+                context = get_browser_context(p, headless=True)
                 page = context.new_page()
 
                 # URL format: https://thehub.io/jobs?search={role}&country={location}

@@ -6,7 +6,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-def get_browser_context(p, headless=False) -> BrowserContext:
+def get_browser_context(p, headless=True) -> BrowserContext:
     """
     Returns a playwright sync browser context.
     Attempts to connect to an existing Chrome instance on port 9222 first.
@@ -37,7 +37,7 @@ def get_browser_context(p, headless=False) -> BrowserContext:
         ignore_default_args=["--enable-automation"]
     )
 
-async def get_async_browser_context(p, headless=False) -> AsyncBrowserContext:
+async def get_async_browser_context(p, headless=True) -> AsyncBrowserContext:
     """
     Returns a playwright async browser context.
     Attempts to connect to an existing Chrome instance on port 9222 first.

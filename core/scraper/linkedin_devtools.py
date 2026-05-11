@@ -92,7 +92,7 @@ class LinkedInScraperHybrid(BaseJobScraper):
 
         try:
             async with async_playwright() as p:
-                browser = await p.chromium.launch(headless=False)  # Visible for debugging
+                browser = await p.chromium.launch(headless=True)  # Visible for debugging
                 page = await browser.new_page()
 
                 # Login
