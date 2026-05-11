@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import threading
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dotenv import load_dotenv
@@ -17,7 +18,7 @@ except ImportError:
     GROQ_AVAILABLE = False
 
 try:
-    from core.ai.client_manager import get_nim_config
+    from core.ai.client_manager import get_nim_client
     NIM_AVAILABLE = True
 except ImportError:
     NIM_AVAILABLE = False
@@ -346,97 +347,87 @@ def score_batch_groq(resume_text: str, jobs: list[dict], retries: int = 3) -> li
     return []
 
 def score_batch_nim(resume_text: str, jobs: list[dict]) -> list[dict]:
-    """Score a batch of jobs using NVIDIA NIM (streaming SSE)."""
+    """Score a batch of jobs using NVIDIA NIM via OpenAI-compatible SDK."""
     if not NIM_AVAILABLE:
         logger.debug("NIM client not available — skipping")
         return []
-    import requests as req
 
-    api_key, base_url = get_nim_config()
-    if not api_key:
+    client = get_nim_client()
+    if not client:
+        logger.warning("NVIDIA_API_KEY not set — skipping NIM scoring")
         return []
 
-    model_name = os.getenv("NIM_MODEL", "mistralai/mistral-large-3-675b-instruct-2512")
+    model_name = os.getenv("NIM_MODEL", "z-ai/glm4.7")
     actual_resume_data = PRE_PARSED_SKILLS if PRE_PARSED_SKILLS else resume_text
+    jobs_to_send = [
+        {"id": j.get("id"), "description": j.get("description", "")[:2000]}
+        for j in jobs
+    ]
     prompt = BATCH_SCORE_PROMPT.format(
         resume_text=actual_resume_data,
-        jobs_json=json.dumps(jobs, indent=2)
+        jobs_json=json.dumps(jobs_to_send, indent=2)
     )
-
-    invoke_url = f"{base_url}/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Accept": "text/event-stream",
-    }
-    payload = {
-        "model": model_name,
-        "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 4096,
-        "temperature": 0.15,
-        "top_p": 1.00,
-        "frequency_penalty": 0.00,
-        "presence_penalty": 0.00,
-        "stream": True,
-    }
 
     for attempt in range(2):
         try:
-            logger.info("⚡ Calling NVIDIA NIM (%s) for batch of %d jobs (streaming, attempt %d/2)...", model_name, len(jobs), attempt + 1)
+            logger.info("⚡ NVIDIA NIM (%s) — batch %d jobs (attempt %d/2)...", model_name, len(jobs), attempt + 1)
             t0 = time.time()
-            response = req.post(invoke_url, headers=headers, json=payload, stream=True, timeout=300)
-            response.raise_for_status()
 
-            # Accumulate streamed content from SSE chunks
+            completion = client.chat.completions.create(
+                model=model_name,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.15,
+                top_p=1,
+                max_tokens=4096,
+                stream=True,
+            )
+
             full_content = []
-            for line in response.iter_lines():
-                if not line:
+            for chunk in completion:
+                if not getattr(chunk, "choices", None) or not chunk.choices:
                     continue
-                decoded = line.decode("utf-8")
-                if decoded.startswith("data: "):
-                    data_str = decoded[6:]
-                    if data_str.strip() == "[DONE]":
-                        break
-                    try:
-                        chunk = json.loads(data_str)
-                        choices = chunk.get("choices", [])
-                        if not choices:
-                            continue
-                        delta = choices[0].get("delta", {})
-                        content_piece = delta.get("content", "")
-                        if content_piece:
-                            full_content.append(content_piece)
-                    except (json.JSONDecodeError, IndexError, KeyError):
-                        continue
+                delta = chunk.choices[0].delta
+                # skip reasoning_content from thinking models (e.g. glm4.7, kimi-k2)
+                content = getattr(delta, "content", None)
+                if content:
+                    full_content.append(content)
 
             elapsed = time.time() - t0
             text = "".join(full_content).strip()
-            logger.info("✅ NVIDIA NIM streaming complete in %.2fs — response length: %d chars", elapsed, len(text))
+            logger.info("✅ NIM complete in %.2fs — %d chars", elapsed, len(text))
 
-            # Clean up markdown fences if present
+            # Strip markdown fences
             if "```" in text:
                 text = text.split("```")[1]
                 if text.startswith("json"):
                     text = text[4:]
 
-            # Find JSON array boundaries
+            # Extract JSON array
             start_idx = text.find('[')
             end_idx = text.rfind(']')
             if start_idx != -1 and end_idx != -1:
-                text = text[start_idx:end_idx+1]
+                text = text[start_idx:end_idx + 1]
 
             results = json.loads(text)
             if isinstance(results, list):
+                logger.info("NIM parsed %d scored results", len(results))
                 return results
             elif isinstance(results, dict):
-                # Model may wrap in "jobs", "matches", "results", etc.
                 for key in results:
                     if isinstance(results[key], list):
+                        logger.info("NIM parsed %d scored results (from key '%s')", len(results[key]), key)
                         return results[key]
+            logger.warning("NIM returned unexpected JSON shape — raw: %.200s", text)
             return []
-        except Exception as e:
-            logger.error("NVIDIA NIM batch scoring error (attempt %d/2): %s", attempt + 1, e)
+        except json.JSONDecodeError as e:
+            logger.error("NIM JSON parse failed (attempt %d/2): %s — raw text: %.300s", attempt + 1, e, text)
             if attempt < 1:
                 time.sleep(2)
+        except Exception as e:
+            logger.error("NIM batch error (attempt %d/2): %s", attempt + 1, e)
+            if attempt < 1:
+                time.sleep(2)
+    logger.warning("NIM gave up after 2 attempts — returning []")
     return []
 
 
@@ -594,55 +585,191 @@ def score_batch_claudecode(resume_text: str, jobs: list[dict], retries: int = 2)
     return []
 
 
+def score_batch_openrouter(resume_text: str, jobs: list[dict]) -> list[dict]:
+    """Score batch via OpenRouter free models with automatic fallback on 429."""
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key or "your_" in api_key:
+        logger.debug("OPENROUTER_API_KEY not set — skipping")
+        return []
+
+    try:
+        from openai import OpenAI, RateLimitError
+    except ImportError:
+        logger.debug("openai SDK not installed — skipping OpenRouter")
+        return []
+
+    client = OpenAI(api_key=api_key, base_url="https://openrouter.ai/api/v1")
+    primary = os.getenv("OPENROUTER_MODEL", "nvidia/nemotron-3-super-120b-a12b:free")
+    fallbacks_raw = os.getenv(
+        "OPENROUTER_FALLBACK_MODELS",
+        "google/gemma-4-31b-it:free,google/gemma-4-26b-a4b-it:free,meta-llama/llama-3.3-70b-instruct:free"
+    )
+    fallbacks = [m.strip() for m in fallbacks_raw.split(",") if m.strip()]
+    models = [primary] + [m for m in fallbacks if m != primary]
+
+    jobs_to_send = [
+        {"id": j.get("id"), "description": j.get("description", "")[:2000]}
+        for j in jobs
+    ]
+    actual_resume_data = PRE_PARSED_SKILLS if PRE_PARSED_SKILLS else resume_text
+    prompt = BATCH_SCORE_PROMPT.format(
+        resume_text=actual_resume_data,
+        jobs_json=json.dumps(jobs_to_send, indent=2)
+    )
+
+    for model in models:
+        for attempt in range(2):
+            try:
+                logger.info("⚡ OpenRouter (%s) — batch %d jobs (attempt %d/2)...", model, len(jobs), attempt + 1)
+                t0 = time.time()
+                resp = client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.1,
+                    max_tokens=4096,
+                )
+                elapsed = time.time() - t0
+                text = (resp.choices[0].message.content or "").strip()
+                logger.info("✅ OpenRouter (%s) done in %.2fs — %d chars", model, elapsed, len(text))
+
+                if "```" in text:
+                    text = text.split("```")[1]
+                    if text.startswith("json"):
+                        text = text[4:]
+
+                start_idx = text.find("[")
+                end_idx = text.rfind("]")
+                if start_idx != -1 and end_idx != -1:
+                    text = text[start_idx:end_idx + 1]
+
+                results = json.loads(text)
+                if isinstance(results, list):
+                    return results
+                elif isinstance(results, dict):
+                    for key in results:
+                        if isinstance(results[key], list):
+                            return results[key]
+                return []
+            except RateLimitError:
+                if attempt == 0:
+                    logger.warning("OpenRouter 429 on %s — retrying after 3s...", model)
+                    time.sleep(3)
+                    continue
+                logger.warning("OpenRouter 429 on %s — trying next model...", model)
+                break
+            except Exception as e:
+                logger.error("OpenRouter error (%s): %s", model, e)
+                break
+
+    logger.error("All OpenRouter models exhausted for this batch")
+    return []
+
+
 def score_batch(resume_text: str, jobs: list[dict], batch_size: int = 50, max_workers: int = 1, on_chunk_complete=None) -> list[dict]:
-    """Score multiple jobs using NVIDIA NIM (Mistral) as the primary scorer."""
-    scored_jobs_map = {}
+    """Score jobs via NIM + OpenRouter in parallel, Ollama fallback for unscored."""
+    scored_jobs_map: dict = {}
+    scored_by: dict = {}  # job_id → "NIM" | "OpenRouter" | "Ollama"
+    map_lock = threading.Lock()
     best_ollama = benchmark_ollama_models()
-    
-    # 1. Score all jobs via NVIDIA NIM (Mistral)
+
     nim_batch_size = int(os.getenv("NIM_BATCH_SIZE", "5"))
-    logger.info("Starting NVIDIA NIM batch scoring — %d jobs in chunks of %d", len(jobs), nim_batch_size)
-    
     chunks = [jobs[i:i + nim_batch_size] for i in range(0, len(jobs), nim_batch_size)]
-    for chunk in chunks:
+    logger.info("═══ Scoring %d jobs | %d chunks of %d | NIM + OpenRouter parallel ═══", len(jobs), len(chunks), nim_batch_size)
+
+    def _process_nim(chunk, idx):
+        chunk_ids = [j.get("id") for j in chunk]
         try:
             results = score_batch_nim(resume_text, chunk)
-            if results:
+            if not results:
+                logger.warning("NIM chunk %d/%d → 0 results (empty/failed)", idx + 1, len(chunks))
+                return
+            with map_lock:
+                newly_scored = []
                 for res in results:
-                    scored_jobs_map[res.get("id")] = res
-                if on_chunk_complete:
-                    on_chunk_complete(results)
+                    jid = res.get("id")
+                    if jid and jid not in scored_jobs_map:
+                        scored_jobs_map[jid] = res
+                        scored_by[jid] = "NIM"
+                        newly_scored.append(res)
+            logger.info("NIM chunk %d/%d → %d/%d jobs newly scored", idx + 1, len(chunks), len(newly_scored), len(chunk))
+            if on_chunk_complete and newly_scored:
+                on_chunk_complete(newly_scored, scorer="NIM")
         except Exception as e:
-            logger.error("NVIDIA NIM batch failed for a chunk: %s", e)
+            logger.error("NIM chunk %d/%d crashed: %s | jobs: %s", idx + 1, len(chunks), e, chunk_ids)
 
-    # 2. Fallback: Ollama for any remaining unscored jobs
+    def _process_openrouter(chunk, idx):
+        chunk_ids = [j.get("id") for j in chunk]
+        try:
+            results = score_batch_openrouter(resume_text, chunk)
+            if not results:
+                logger.warning("OpenRouter chunk %d/%d → 0 results (empty/failed)", idx + 1, len(chunks))
+                return
+            with map_lock:
+                newly_scored = []
+                already_count = 0
+                for res in results:
+                    jid = res.get("id")
+                    if jid and jid not in scored_jobs_map:
+                        scored_jobs_map[jid] = res
+                        scored_by[jid] = "OpenRouter"
+                        newly_scored.append(res)
+                    elif jid:
+                        already_count += 1
+            logger.info("OpenRouter chunk %d/%d → %d newly scored, %d already by NIM", idx + 1, len(chunks), len(newly_scored), already_count)
+            if on_chunk_complete and newly_scored:
+                on_chunk_complete(newly_scored, scorer="OpenRouter")
+        except Exception as e:
+            logger.error("OpenRouter chunk %d/%d crashed: %s | jobs: %s", idx + 1, len(chunks), e, chunk_ids)
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = []
+        for idx, chunk in enumerate(chunks):
+            futures.append(executor.submit(_process_nim, chunk, idx))
+            futures.append(executor.submit(_process_openrouter, chunk, idx))
+        for f in as_completed(futures):
+            try:
+                f.result()
+            except Exception as e:
+                logger.error("Unexpected future exception: %s", e)
+
+    # Tally after parallel phase
+    nim_count = sum(1 for v in scored_by.values() if v == "NIM")
+    or_count = sum(1 for v in scored_by.values() if v == "OpenRouter")
     unscored_jobs = [j for j in jobs if j.get("id") not in scored_jobs_map]
+    logger.info("─── Parallel phase done | NIM: %d | OpenRouter: %d | Unscored: %d ───", nim_count, or_count, len(unscored_jobs))
+
+    # Ollama fallback for any jobs neither NIM nor OpenRouter scored
     if unscored_jobs and best_ollama:
-        logger.info("Fallback: Scoring %d remaining jobs via Ollama Batch (%s)", len(unscored_jobs), best_ollama)
+        logger.info("Fallback: %d unscored jobs → Ollama (%s)", len(unscored_jobs), best_ollama)
+        ollama_count = 0
         for i in range(0, len(unscored_jobs), 5):
-            chunk = unscored_jobs[i:i+5]
+            chunk = unscored_jobs[i:i + 5]
             results = score_batch_ollama(resume_text, chunk, best_ollama)
             if results:
                 for res in results:
-                    scored_jobs_map[res.get("id")] = res
+                    jid = res.get("id")
+                    scored_jobs_map[jid] = res
+                    scored_by[jid] = "Ollama"
+                    ollama_count += 1
                 if on_chunk_complete:
                     on_chunk_complete(results)
+        still_unscored = [j for j in jobs if j.get("id") not in scored_jobs_map]
+        logger.info("Ollama scored %d | still unscored: %d", ollama_count, len(still_unscored))
     elif unscored_jobs:
-        logger.warning("%d jobs remain unscored — NIM failed and no local Ollama fallback available.", len(unscored_jobs))
+        logger.warning("%d jobs remain unscored — NIM + OpenRouter failed, no Ollama available.", len(unscored_jobs))
 
-    # Assemble final list
     final_jobs = []
-    for i, job in enumerate(jobs):
+    for job in jobs:
         job_id = job.get("id")
-        score_data = scored_jobs_map.get(job_id)
-        
-        if not score_data:
-            score_data = {"score": 0, "matching_skills": [], "missing_skills": []}
-
+        score_data = scored_jobs_map.get(job_id) or {"score": 0, "matching_skills": [], "missing_skills": []}
         job["score"] = score_data.get("score", 0)
         job["matching_skills"] = score_data.get("matching_skills", [])
         job["missing_skills"] = score_data.get("missing_skills", [])
         job["recommendation"] = score_data.get("recommendation", "")
         final_jobs.append(job)
 
+    total_scored = sum(1 for j in final_jobs if j.get("score", 0) > 0)
+    logger.info("═══ Final tally: %d/%d jobs scored (NIM:%d OR:%d Ollama:%d) ═══",
+                total_scored, len(jobs), nim_count, or_count,
+                sum(1 for v in scored_by.values() if v == "Ollama"))
     return final_jobs

@@ -9,6 +9,13 @@ except ImportError:
     Groq = None
     GROQ_SDK_AVAILABLE = False
 
+try:
+    from openai import OpenAI as _OpenAIClient
+    OPENAI_SDK_AVAILABLE = True
+except ImportError:
+    _OpenAIClient = None
+    OPENAI_SDK_AVAILABLE = False
+
 logger = get_logger("ai.client_manager")
 
 class GroqClientManager:
@@ -71,6 +78,11 @@ class NIMClientManager:
     def get_base_url(self) -> str:
         return self._base_url
 
+    def get_client(self) -> Optional[_OpenAIClient]:
+        if not self._api_key or _OpenAIClient is None:
+            return None
+        return _OpenAIClient(base_url=self._base_url, api_key=self._api_key)
+
 # Global manager instances
 groq_manager = GroqClientManager()
 nim_manager = NIMClientManager()
@@ -80,3 +92,6 @@ def get_groq_client(rotate: bool = True) -> Optional[Groq]:
 
 def get_nim_config():
     return nim_manager.get_api_key(), nim_manager.get_base_url()
+
+def get_nim_client() -> Optional[_OpenAIClient]:
+    return nim_manager.get_client()
