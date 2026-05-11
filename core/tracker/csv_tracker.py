@@ -97,7 +97,7 @@ class CSVTracker:
         """Delete all jobs for a specific platform from CSV."""
         if not os.path.exists(self.filepath):
             return True
-            
+
         try:
             df = pd.read_csv(self.filepath)
             if "Platform" in df.columns:
@@ -109,4 +109,17 @@ class CSVTracker:
             return True
         except Exception as e:
             logger.error("Error deleting jobs for platform %s from CSV: %s", platform, e)
+            return False
+
+    def clear_all(self) -> bool:
+        """Delete all jobs from CSV tracker."""
+        logger.warning("Clearing all jobs from CSV tracker")
+        try:
+            if os.path.exists(self.filepath):
+                df = pd.DataFrame(columns=COLUMNS)
+                df.to_csv(self.filepath, index=False)
+                logger.warning("Cleared all jobs from CSV tracker")
+            return True
+        except Exception as e:
+            logger.error("Error clearing CSV tracker: %s", e)
             return False

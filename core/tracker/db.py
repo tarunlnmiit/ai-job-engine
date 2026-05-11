@@ -163,6 +163,22 @@ class JobCache:
             logger.error("Error deleting jobs for platform %s: %s", platform, e)
             return False
 
+    def clear_all(self) -> bool:
+        """Delete all jobs from cache."""
+        logger.warning("Clearing all jobs from database")
+        try:
+            conn = sqlite3.connect(self.db_path)
+            c = conn.cursor()
+            c.execute("DELETE FROM jobs")
+            count = conn.total_changes
+            conn.commit()
+            conn.close()
+            logger.warning("Cleared %d jobs from database", count)
+            return True
+        except Exception as e:
+            logger.error("Error clearing database: %s", e)
+            return False
+
     def _row_to_dict(self, row) -> dict:
         """Convert database row to dictionary."""
         return {
