@@ -22,6 +22,8 @@ if not jobs:
 
 # Convert to DataFrame
 df = pd.DataFrame(jobs)
+if "score" in df.columns:
+    df["score"] = pd.to_numeric(df["score"], errors="coerce").fillna(0)
 
 # Summary metrics
 col1, col2, col3 = st.columns(3)
@@ -112,22 +114,39 @@ if m_col2.button("🗑️ Clean Platform"):
     else:
         with st.spinner(f"Cleaning {clean_platform}..."):
             from core.tracker.csv_tracker import CSVTracker
-            
+
             # Clean SQLite
             db_success = db.delete_jobs_by_platform(clean_platform)
-            
+
             # Clean CSV
             tracker = CSVTracker()
             csv_success = tracker.delete_jobs_by_platform(clean_platform)
-            
+
             if db_success and csv_success:
                 st.success(f"Successfully cleaned all jobs for {clean_platform}!")
                 st.rerun()
             else:
                 st.error("Cleaning failed partially or fully. Check logs.")
 
+st.divider()
+
+confirm_clear_all = st.checkbox("I am sure I want to delete EVERY job from SQLite and CSV")
 if st.button("🗑️ Clear ENTIRE Database (DANGEROUS)"):
-    if st.checkbox("I am sure I want to delete EVERY job from SQLite and CSV"):
-        # Just use a loop or add a clear_all method
-        # For now, let's just implement the platform one as requested
-        st.warning("Full clear not yet implemented. Use Clean Platform for each individually.")
+    if not confirm_clear_all:
+        st.warning("Please confirm deletion by checking the box.")
+    else:
+        with st.spinner("Clearing entire database..."):
+            from core.tracker.csv_tracker import CSVTracker
+
+            # Clear SQLite
+            db_success = db.clear_all()
+
+            # Clear CSV
+            tracker = CSVTracker()
+            csv_success = tracker.clear_all()
+
+            if db_success and csv_success:
+                st.success("Successfully cleared entire database!")
+                st.rerun()
+            else:
+                st.error("Clearing failed partially or fully. Check logs.")

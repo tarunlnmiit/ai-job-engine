@@ -5,6 +5,8 @@ from pathlib import Path
 from datetime import datetime
 import asyncio
 import inspect
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dotenv import load_dotenv
 from core.ui.style import apply_custom_style, safe_score
 
@@ -113,46 +115,78 @@ if submitted:
     if not countries:
         st.error("Please select at least one country.")
         st.stop()
-        
+
     with st.status("🌍 Orchestrating European Search...", expanded=True) as status:
         from core.scraper import (
-            RelocateMeScraper, TheHubScraper, LinkedInScraper, 
+            RelocateMeScraper, TheHubScraper, LinkedInScraper,
             GreenhouseScraper, LeverScraper, WellfoundScraper,
             ArbeitNowScraper, WorkInLuxembourgScraper
         )
         from core.tracker.db import JobCache
         from core.tracker.csv_tracker import CSVTracker
-        from core.ai.scorer import score_batch
+        from core.ai.scorer import score_batch_nim
         from core.resume.parser import ResumeParser
-        
+
         scraper_map = {
             "relocateme": RelocateMeScraper, "thehub": TheHubScraper, "linkedin": LinkedInScraper,
             "greenhouse": GreenhouseScraper, "lever": LeverScraper, "wellfound": WellfoundScraper,
             "arbeitnow": ArbeitNowScraper, "workinluxembourg": WorkInLuxembourgScraper
         }
-        
+
         from core.ui.style import get_resume_path
-        # Europe page uses EU resume for scoring
         resume_path = get_resume_path(mode="score", job_type="EU")
-        
+
         if not resume_path:
             status.update(label="❌ EU Full Resume not found in 'resume/Full Resumes'!", state="error")
             st.stop()
-            
+
         status.write(f"📄 Analyzing EU Full Resume: {os.path.basename(resume_path)}...")
         parser = ResumeParser()
-            
         resume_text = parser.parse(str(resume_path))
         degree_type = "German Master's" if has_german_degree else "International"
         blue_card_type = "Yes" if has_previous_blue_card else "No"
         eu_context = f"\n\n[EU RELOCATION CONTEXT]\n- Degree: {degree_type}\n- Previous Blue Card: {blue_card_type}\n- German Work Exp: {german_work_exp} years\n"
         resume_text += eu_context
-        
-        all_jobs = []
+
+        db = JobCache()
+        tracker = CSVTracker()
+        csv_lock = threading.Lock()
+
+        existing_ids = {str(ej.get("Job ID")) for ej in tracker.get_all_jobs()}
         roles = [r.strip() for r in roles_text.split("\n") if r.strip()]
-        
+
+        total_scraped = 0
+        total_saved = 0
+        scoring_futures = []
+
+        def score_and_save(r_text, jobs_dicts):
+            """Score a batch and write scores back to DB+CSV. Runs in thread."""
+            results = score_batch_nim(r_text, jobs_dicts)
+            job_map = {j["id"]: j for j in jobs_dicts}
+            count = 0
+            for res in results:
+                jid = res.get("id")
+                base = job_map.get(jid)
+                if not base:
+                    continue
+                scored = {
+                    **base,
+                    "score": int(float(res.get("score", 0))),
+                    "matching_skills": res.get("matching_skills", []),
+                    "missing_skills": res.get("missing_skills", []),
+                    "recommendation": res.get("recommendation", ""),
+                }
+                db.add_job(scored)
+                with csv_lock:
+                    tracker.update_job(scored)
+                count += 1
+            return count
+
+        executor = ThreadPoolExecutor(max_workers=4) if not skip_scoring else None
+
         for platform in platforms:
-            if platform not in scraper_map: continue
+            if platform not in scraper_map:
+                continue
             scraper = scraper_map[platform]()
             for country in countries:
                 for role in roles:
@@ -163,39 +197,45 @@ if submitted:
                             jobs = asyncio.run(scraper.search(role=search_role, location=country, max_pages=max_pages))
                         else:
                             jobs = scraper.search(role=search_role, location=country, max_pages=max_pages)
-                        all_jobs.extend(jobs)
+
+                        total_scraped += len(jobs)
+
+                        # Save new jobs immediately — dedup by ID
+                        new_jobs_dicts = []
+                        for job in jobs:
+                            if str(job.id) not in existing_ids:
+                                j_dict = job.to_dict()
+                                j_dict["status"] = "new"
+                                j_dict["score"] = ""
+                                db.add_job(j_dict)
+                                with csv_lock:
+                                    tracker.update_job(j_dict)
+                                existing_ids.add(str(job.id))
+                                new_jobs_dicts.append(j_dict)
+                                total_saved += 1
+
+                        if new_jobs_dicts:
+                            status.write(f"  💾 {len(new_jobs_dicts)} new saved ({platform}/{country})")
+
+                        # Submit batch for parallel scoring
+                        if not skip_scoring and new_jobs_dicts and executor:
+                            scoring_futures.append(executor.submit(score_and_save, resume_text, new_jobs_dicts))
+
                     except Exception as e:
-                        status.write(f"⚠️ Error on {platform}: {e}")
-        
-        if all_jobs:
-            status.write(f"⭐ Found {len(all_jobs)} jobs. Commencing AI Scoring...")
-            jobs_dicts = [j.to_dict() for j in all_jobs]
-            db = JobCache(); tracker = CSVTracker()
-            
-            if skip_scoring:
-                status.write(f"💾 Saving {len(all_jobs)} unscored jobs...")
-                existing = tracker.get_all_jobs()
-                existing_ids = {str(ej.get("Job ID")) for ej in existing}
-                new_count = 0
-                for job in all_jobs:
-                    if str(job.id) not in existing_ids:
-                        j_dict = job.to_dict()
-                        j_dict["status"] = "new"
-                        j_dict["score"] = ""
-                        db.add_job(j_dict); tracker.update_job(j_dict)
-                        new_count += 1
-                status.update(label=f"✅ Saved {new_count} new unscored jobs!", state="complete")
-            else:
-                def on_save(results):
-                    job_obj_map = {j.id: j for j in all_jobs}
-                    for res in results:
-                        orig = job_obj_map.get(res["id"])
-                        if not orig: continue
-                        j_dict = orig.to_dict()
-                        j_dict.update({"score": int(float(res.get("score", 0))), "matching_skills": res.get("matching_skills", []), "missing_skills": res.get("missing_skills", []), "recommendation": res.get("recommendation", "")})
-                        db.add_job(j_dict); tracker.update_job(j_dict)
-                
-                score_batch(resume_text, jobs_dicts, on_chunk_complete=on_save)
-                status.update(label=f"✅ Mission Complete! {len(all_jobs)} jobs processed.", state="complete")
+                        status.write(f"⚠️ Error on {platform}/{country}: {e}")
+
+        status.write(f"🔎 Scraping done — {total_saved} new jobs saved from {total_scraped} found. Waiting for scoring...")
+
+        total_scored = 0
+        if executor:
+            executor.shutdown(wait=True)
+            for future in scoring_futures:
+                try:
+                    total_scored += future.result()
+                except Exception:
+                    pass
+
+        if skip_scoring:
+            status.update(label=f"✅ Done! {total_saved} new jobs saved (score later in Batch Scorer).", state="complete")
         else:
-            status.update(label="⚠️ No jobs found.", state="complete")
+            status.update(label=f"✅ Done! {total_saved} saved, {total_scored} scored.", state="complete")
