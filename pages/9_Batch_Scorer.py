@@ -102,7 +102,7 @@ with col_action:
 
         limit = st.number_input("Max jobs to score in this batch", value=min(len(unscored_df), 50), min_value=1, max_value=500)
 
-        submitted = st.form_submit_button("🚀 START SCORING MISSION", use_container_width=True)
+        submitted = st.form_submit_button("🚀 START SCORING MISSION", width="stretch")
 
 if submitted:
     to_score_df = unscored_df.copy()
@@ -126,12 +126,27 @@ if submitted:
         parser = ResumeParser()
         resume_text = parser.parse(str(resume_path))
 
-        # 2. Prepare jobs
+        # 2. Prepare jobs — Enrich with full descriptions from DB
+        db = JobCache()
         jobs_to_score = []
+        import logging
+        enrich_logger = logging.getLogger("job_hunt.pages.batch_scorer")
+        
         for _, row in to_score_df.iterrows():
+            jid = str(row["Job ID"]).strip()
+            # Try to get full description from SQLite DB
+            db_job = db.get_job(jid)
+            
+            if db_job:
+                description = db_job.get("description")
+                enrich_logger.info("Enriched job %s from DB (desc len: %d)", jid, len(str(description or "")))
+            else:
+                description = row.get("Description")
+                enrich_logger.warning("Job %s NOT found in DB, using CSV snippet", jid)
+            
             jobs_to_score.append({
-                "id": str(row["Job ID"]),
-                "description": str(row["Description"]),
+                "id": jid,
+                "description": str(description or "No description available"),
                 "title": str(row["Role"]),
                 "company": str(row["Company"]),
                 "location": str(row["Location"]),
@@ -141,54 +156,75 @@ if submitted:
 
         # 3. Score — collect results from threads, write DB/CSV in main thread after
         import threading
-        scored_results = []          # accumulates (res, orig_row) tuples
+        scored_results = {}          # job_id → (res, orig_row, scorer)
         tally = {"NIM": 0, "OpenRouter": 0, "Ollama": 0}
         collect_lock = threading.Lock()
+
+        # Build a lookup from job_id → orig_row for fast ID matching
+        id_to_orig = {str(row["Job ID"]).strip(): row for _, row in to_score_df.iterrows()}
 
         def on_chunk(results, scorer="Unknown"):
             # Called from background threads — only collect, no Streamlit/file I/O
             with collect_lock:
                 tally[scorer] = tally.get(scorer, 0) + len(results)
                 for res in results:
-                    jid = res.get("id")
-                    orig_rows = to_score_df[to_score_df["Job ID"] == jid]
-                    if orig_rows.empty:
+                    jid = str(res.get("id", "")).strip()
+                    orig_row = id_to_orig.get(jid)
+                    if orig_row is None:
                         continue
-                    scored_results.append((res, orig_rows.iloc[0].to_dict(), scorer))
+                    
+                    score = int(float(res.get("score", 0)))
+                    if jid not in scored_results or (scored_results[jid][0].get("score", 0) == 0 and score > 0):
+                        scored_results[jid] = (res, orig_row, scorer)
 
         status.write("⏳ Scoring in progress (NIM + OpenRouter parallel)...")
         score_batch(resume_text, jobs_to_score, on_chunk_complete=on_chunk)
 
-        # All threads done — write DB/CSV from main thread sequentially
-        status.write(f"💾 Saving {len(scored_results)} scored jobs to DB and tracker...")
-        for res, orig_row, scorer in scored_results:
-            jid = res.get("id")
-            scorer_icon = {"NIM": "⚡", "OpenRouter": "🌐", "Ollama": "🦙"}.get(scorer, "🤖")
-            update_data = {
-                "id": jid,
-                "title": orig_row.get("Role"),
-                "company": orig_row.get("Company"),
-                "location": orig_row.get("Location"),
-                "platform": orig_row.get("Platform"),
-                "description": orig_row.get("Description"),
-                "application_url": orig_row.get("Application URL"),
-                "date_found": orig_row.get("Date Found"),
-                "salary": orig_row.get("Salary"),
-                "is_remote": orig_row.get("Remote") == "Yes",
-                "notes": orig_row.get("Notes"),
-                "score": int(float(res.get("score", 0))),
-                "matching_skills": res.get("matching_skills", []),
-                "missing_skills": res.get("missing_skills", []),
-                "recommendation": res.get("recommendation", ""),
-                "status": orig_row.get("Status", "new"),
-            }
-            db.add_job(update_data)
-            tracker.update_job(update_data)
+        # Diagnostic: surface tally vs collected count
+        raw_total = sum(tally.values())
+        status.write(
+            f"📊 Scoring done — raw results: {raw_total} "
+            f"(NIM:{tally['NIM']} OR:{tally['OpenRouter']} Ollama:{tally['Ollama']}) "
+            f"| matched to tracker: {len(scored_results)}"
+        )
+        if raw_total > 0 and len(scored_results) == 0:
+            status.update(label="❌ Scoring returned results but no Job IDs matched tracker — check logs", state="error")
+            st.stop()
 
-        total_saved = len(scored_results)
+        # All threads done — write DB/CSV from main thread sequentially
+        save_errors = 0
+        for jid, (res, orig_row, scorer) in scored_results.items():
+            jid = str(res.get("id", ""))
+            try:
+                update_data = {
+                    "id": jid,
+                    "title": orig_row.get("Role"),
+                    "company": orig_row.get("Company"),
+                    "location": orig_row.get("Location"),
+                    "platform": orig_row.get("Platform"),
+                    "description": orig_row.get("Description"),
+                    "application_url": orig_row.get("Application URL"),
+                    "date_found": orig_row.get("Date Found"),
+                    "salary": orig_row.get("Salary"),
+                    "is_remote": orig_row.get("Remote") == "Yes",
+                    "notes": orig_row.get("Notes"),
+                    "score": int(float(res.get("score", 0))),
+                    "matching_skills": res.get("matching_skills", []),
+                    "missing_skills": res.get("missing_skills", []),
+                    "recommendation": res.get("recommendation", ""),
+                    "status": orig_row.get("Status", "new"),
+                }
+                db.add_job(update_data)
+                tracker.update_job(update_data)
+            except Exception as e:
+                save_errors += 1
+                st.warning(f"Save failed for job {jid}: {e}")
+
+        total_saved = len(scored_results) - save_errors
         status.update(
-            label=f"✅ Done! {total_saved}/{len(jobs_to_score)} scored — NIM:{tally['NIM']} OR:{tally['OpenRouter']} Ollama:{tally['Ollama']}",
-            state="complete"
+            label=f"✅ Done! {total_saved}/{len(jobs_to_score)} saved — NIM:{tally['NIM']} OR:{tally['OpenRouter']} Ollama:{tally['Ollama']}"
+                  + (f" | ⚠️ {save_errors} save errors" if save_errors else ""),
+            state="complete" if not save_errors else "error"
         )
 
         st.balloons()
