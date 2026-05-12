@@ -19,19 +19,54 @@ logger = get_logger("scraper.relocateme")
 
 class RelocateMeScraper(BaseJobScraper):
     """Scrape jobs from Relocate.me using Playwright."""
+    _role_cache = {}  # Class-level cache for {role: [Job, Job, ...]}
+    _cache_time = {} # {role: datetime}
 
     def search(self, role: str, location: str = "Germany", max_pages: int = 1, **kwargs) -> list[Job]:
-        logger.info("Searching Relocate.me: role=%r location=%r max_pages=%d", role, location, max_pages)
+        logger.info("Searching Relocate.me: role=%r location=%r", role, location)
 
         if not PLAYWRIGHT_AVAILABLE:
             logger.error("Playwright not installed.")
             return []
 
-        jobs = self._search_playwright(role, location, max_pages)
-        logger.info("Relocate.me search complete: %d jobs found", len(jobs))
-        return jobs
+        # 1. Check cache first
+        now = datetime.now()
+        cache_hit = False
+        if role in self._role_cache:
+            last_scraped = self._cache_time.get(role)
+            # Cache is valid for 10 minutes
+            if last_scraped and (now - last_scraped).total_seconds() < 600:
+                logger.info("⚡ Cache hit for role '%s' on Relocate.me", role)
+                cache_hit = True
+        
+        if cache_hit:
+            all_jobs = self._role_cache[role]
+        else:
+            # 2. Perform global scrape for the role
+            all_jobs = self._search_playwright(role, max_pages)
+            if all_jobs:  # ONLY CACHE IF WE FOUND SOMETHING
+                self._role_cache[role] = all_jobs
+                self._cache_time[role] = now
+            else:
+                logger.warning("⚠️ No jobs found for role '%s' on Relocate.me — not caching empty result", role)
 
-    def _search_playwright(self, role: str, location: str, max_pages: int) -> list[Job]:
+        # 3. Filter by location in memory
+        filtered_jobs = []
+        for job in all_jobs:
+            # Location filter (case-insensitive)
+            if not location or location.lower() in ("remote", "anywhere", "international"):
+                filtered_jobs.append(job)
+                continue
+                
+            if location.lower() in job.location.lower() or \
+               location.lower() in job.title.lower() or \
+               location.lower() in job.application_url.lower():
+                filtered_jobs.append(job)
+
+        logger.info("Relocate.me search complete: %d jobs matched from %d total for role", len(filtered_jobs), len(all_jobs))
+        return filtered_jobs
+
+    def _search_playwright(self, role: str, max_pages: int) -> list[Job]:
         if not BS_AVAILABLE:
             return []
 
@@ -103,12 +138,31 @@ class RelocateMeScraper(BaseJobScraper):
                                 if location.lower() not in title.lower() and location.lower() not in href.lower():
                                     continue
 
+                        # FETCH FULL DESCRIPTION
+                        description = ""
+                        try:
+                            logger.info("Fetching Relocate.me detail: %s", title)
+                            detail_page = context.new_page()
+                            detail_page.goto(href, wait_until="domcontentloaded", timeout=30000)
+                            
+                            # Relocate.me description confirmed in browser
+                            desc_elem = detail_page.locator(".job-info__description").first
+                            if desc_elem.is_visible():
+                                description = desc_elem.inner_text()
+                            else:
+                                description = detail_page.locator("body").inner_text()[:3000]
+                            
+                            detail_page.close()
+                        except Exception as desc_e:
+                            logger.warning("Could not fetch detail for %s: %s", href, desc_e)
+                            description = f"International relocation opportunity in {job_location}. Company: {company}"
+
                         job = Job(
                             id=job_id,
                             title=title,
                             company=company,
                             location=job_location,
-                            description=f"International relocation opportunity in {job_location}. Company: {company}",
+                            description=description,
                             application_url=href,
                             platform="Relocate.me",
                             date_found=datetime.now().isoformat()
