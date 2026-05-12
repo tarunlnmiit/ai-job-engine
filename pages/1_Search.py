@@ -228,10 +228,11 @@ if submitted:
                 else:
                     def on_chunk(chunk):
                         status.write(f"💾 Saving chunk of {len(chunk)} scored jobs...")
-                        job_obj_map = {j.id if hasattr(j, 'id') else j.get('id'): j for j in all_jobs}
+                        job_obj_map = {str(j.id if hasattr(j, 'id') else j.get('id')).strip(): j for j in all_jobs}
                         to_save = []
                         for res in chunk:
-                            orig = job_obj_map.get(res.get("id"))
+                            jid = str(res.get("id", "")).strip()
+                            orig = job_obj_map.get(jid)
                             if not orig: continue
                             j_dict = orig.to_dict() if hasattr(orig, 'to_dict') else orig.copy()
                             j_dict.update({"score": int(float(res.get("score", 0))), "matching_skills": res.get("matching_skills", []), "missing_skills": res.get("missing_skills", []), "recommendation": res.get("recommendation", "")})

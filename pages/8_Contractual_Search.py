@@ -175,9 +175,10 @@ if submitted:
                 status.update(label=f"✅ Saved {new_count} new unscored jobs!", state="complete")
             else:
                 def on_save(results):
-                    job_obj_map = {j.id: j for j in all_jobs}
+                    job_obj_map = {str(j.id).strip(): j for j in all_jobs}
                     for res in results:
-                        orig = job_obj_map.get(res["id"])
+                        jid = str(res.get("id", "")).strip()
+                        orig = job_obj_map.get(jid)
                         if not orig: continue
                         j_dict = orig.to_dict()
                         j_dict.update({

@@ -268,6 +268,12 @@ def score_batch_ollama(resume_text: str, jobs: list[dict], model_name: str) -> l
             text = text.split("```")[1]
             if text.startswith("json"): text = text[4:]
             
+        # Robust extraction: Find first [ and last ]
+        start_idx = text.find('[')
+        end_idx = text.rfind(']')
+        if start_idx != -1 and end_idx != -1:
+            text = text[start_idx:end_idx+1]
+            
         results = json.loads(text)
         if isinstance(results, dict) and "jobs" in results:
             results = results["jobs"]
@@ -649,6 +655,8 @@ def score_batch_openrouter(resume_text: str, jobs: list[dict]) -> list[dict]:
         for attempt in range(2):
             try:
                 logger.info("⚡ OpenRouter (%s) — batch %d jobs (attempt %d/2)...", model, len(jobs), attempt + 1)
+                # Debug: Show full prompt in terminal
+                logger.info("--- OPENROUTER PROMPT ---\n%s\n-----------------------", prompt)
                 t0 = time.time()
                 resp = client.chat.completions.create(
                     model=model,
@@ -658,7 +666,9 @@ def score_batch_openrouter(resume_text: str, jobs: list[dict]) -> list[dict]:
                 )
                 elapsed = time.time() - t0
                 text = (resp.choices[0].message.content or "").strip()
-                logger.info("✅ OpenRouter (%s) done in %.2fs — %d chars | preview: %.100s", model, elapsed, len(text), text)
+                logger.info("✅ OpenRouter (%s) done in %.2fs — %d chars", model, elapsed, len(text))
+                # Debug: Show full response in terminal
+                logger.info("--- OPENROUTER RESPONSE ---\n%s\n-------------------------", text)
 
                 if "```" in text:
                     text = text.split("```")[1]
@@ -725,11 +735,14 @@ def score_batch(resume_text: str, jobs: list[dict], batch_size: int = 50, max_wo
             with map_lock:
                 newly_scored = []
                 for res in results:
-                    jid = res.get("id")
-                    if jid and jid not in scored_jobs_map:
-                        scored_jobs_map[jid] = res
-                        scored_by[jid] = "NIM"
-                        newly_scored.append(res)
+                    jid = str(res.get("id")).strip() if res.get("id") is not None else None
+                    if jid:
+                        score = int(float(res.get("score", 0)))
+                        # Allow overwrite if current score is 0 or not present
+                        if jid not in scored_jobs_map or (scored_jobs_map[jid].get("score", 0) == 0 and score > 0):
+                            scored_jobs_map[jid] = res
+                            scored_by[jid] = "NIM"
+                            newly_scored.append(res)
             logger.info("NIM chunk %d/%d → %d/%d jobs newly scored", idx + 1, len(chunks), len(newly_scored), len(chunk))
             if on_chunk_complete and newly_scored:
                 on_chunk_complete(newly_scored, scorer="NIM")
@@ -747,13 +760,16 @@ def score_batch(resume_text: str, jobs: list[dict], batch_size: int = 50, max_wo
                 newly_scored = []
                 already_count = 0
                 for res in results:
-                    jid = res.get("id")
-                    if jid and jid not in scored_jobs_map:
-                        scored_jobs_map[jid] = res
-                        scored_by[jid] = "OpenRouter"
-                        newly_scored.append(res)
-                    elif jid:
-                        already_count += 1
+                    jid = str(res.get("id")).strip() if res.get("id") is not None else None
+                    if jid:
+                        score = int(float(res.get("score", 0)))
+                        # Allow overwrite if current score is 0 or not present
+                        if jid not in scored_jobs_map or (scored_jobs_map[jid].get("score", 0) == 0 and score > 0):
+                            scored_jobs_map[jid] = res
+                            scored_by[jid] = "OpenRouter"
+                            newly_scored.append(res)
+                        elif jid in scored_jobs_map:
+                            already_count += 1
             logger.info("OpenRouter chunk %d/%d → %d newly scored, %d already by NIM", idx + 1, len(chunks), len(newly_scored), already_count)
             if on_chunk_complete and newly_scored:
                 on_chunk_complete(newly_scored, scorer="OpenRouter")
@@ -762,9 +778,17 @@ def score_batch(resume_text: str, jobs: list[dict], batch_size: int = 50, max_wo
 
     with ThreadPoolExecutor(max_workers=4) as executor:
         futures = []
-        for idx, chunk in enumerate(chunks):
-            futures.append(executor.submit(_process_nim, chunk, idx))
-            futures.append(executor.submit(_process_openrouter, chunk, idx))
+        if len(jobs) <= nim_batch_size:
+            # Single batch case: Only use OpenRouter to save NIM credits/parallel overhead
+            for idx, chunk in enumerate(chunks):
+                futures.append(executor.submit(_process_openrouter, chunk, idx))
+        else:
+            # Multi-batch case: Distribute chunks among providers (no overlapping jobs)
+            for idx, chunk in enumerate(chunks):
+                if idx % 2 == 0:
+                    futures.append(executor.submit(_process_nim, chunk, idx))
+                else:
+                    futures.append(executor.submit(_process_openrouter, chunk, idx))
         for f in as_completed(futures):
             try:
                 f.result()
@@ -786,7 +810,7 @@ def score_batch(resume_text: str, jobs: list[dict], batch_size: int = 50, max_wo
             results = score_batch_ollama(resume_text, chunk, best_ollama)
             if results:
                 for res in results:
-                    jid = res.get("id")
+                    jid = str(res.get("id")).strip() if res.get("id") is not None else None
                     scored_jobs_map[jid] = res
                     scored_by[jid] = "Ollama"
                     ollama_count += 1
@@ -799,7 +823,7 @@ def score_batch(resume_text: str, jobs: list[dict], batch_size: int = 50, max_wo
 
     final_jobs = []
     for job in jobs:
-        job_id = job.get("id")
+        job_id = str(job.get("id")).strip()
         score_data = scored_jobs_map.get(job_id) or {"score": 0, "matching_skills": [], "missing_skills": []}
         job["score"] = score_data.get("score", 0)
         job["matching_skills"] = score_data.get("matching_skills", [])

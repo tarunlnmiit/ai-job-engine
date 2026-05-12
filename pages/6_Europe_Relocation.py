@@ -162,10 +162,10 @@ if submitted:
         def score_and_save(r_text, jobs_dicts):
             """Score a batch and write scores back to DB+CSV. Runs in thread."""
             results = score_batch_nim(r_text, jobs_dicts)
-            job_map = {j["id"]: j for j in jobs_dicts}
+            job_map = {str(j["id"]).strip(): j for j in jobs_dicts}
             count = 0
             for res in results:
-                jid = res.get("id")
+                jid = str(res.get("id", "")).strip()
                 base = job_map.get(jid)
                 if not base:
                     continue
