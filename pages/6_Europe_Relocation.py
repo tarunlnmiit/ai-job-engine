@@ -96,7 +96,7 @@ with col_main:
             default=["relocateme", "thehub", "arbeitnow", "workinluxembourg", "linkedin"]
         )
         
-        max_pages = st.number_input("Search Depth (Pages per country)", value=1, min_value=1, max_value=5)
+        max_pages = st.number_input("Search Depth (Pages per country)", value=1, min_value=1, max_value=10)
         skip_scoring = st.checkbox("🚀 Save Only (Skip AI Scoring)", value=False, help="Fast mode: Scrape jobs now and score them later.")
         
         submitted = st.form_submit_button("🚀 INITIATE EUROPEAN MISSION", width="stretch")

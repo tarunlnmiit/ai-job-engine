@@ -131,12 +131,6 @@ class RelocateMeScraper(BaseJobScraper):
                         if len(info_blocks) >= 2:
                             company = info_blocks[1].get_text(strip=True)
 
-                        # Location filter (case-insensitive)
-                        if location and location.lower() not in ("remote", "anywhere", "international"):
-                            if location.lower() not in job_location.lower():
-                                # Try checking the title or the URL if the location block is messy
-                                if location.lower() not in title.lower() and location.lower() not in href.lower():
-                                    continue
 
                         # FETCH FULL DESCRIPTION
                         description = ""
