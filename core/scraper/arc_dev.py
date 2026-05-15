@@ -44,7 +44,7 @@ class ArcDevScraper(BaseJobScraper):
                 seen_urls = set()
                 for data in link_data:
                     href = data["href"]
-                    if "/remote-jobs/search" in href or href == "/remote-jobs/": continue
+                    if "/remote-jobs/details/" not in href and "/remote-jobs/j/" not in href: continue
                     
                     full_url = href if href.startswith("http") else f"https://arc.dev{href}"
                     if full_url in seen_urls: continue

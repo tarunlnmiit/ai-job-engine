@@ -93,9 +93,24 @@ class MakeItInGermanyScraper(BaseJobScraper):
                             if location.lower() not in job_location.lower():
                                 continue
 
-                        # Extract description snippet
-                        desc_elem = item.select_one(".description, .job-description, p")
-                        description = desc_elem.get_text(strip=True) if desc_elem else f"Job opportunity in {job_location}"
+                        # FETCH FULL DESCRIPTION
+                        description = ""
+                        try:
+                            logger.info("Fetching Make it in Germany detail: %s", title)
+                            detail_page = context.new_page()
+                            detail_page.goto(href, wait_until="domcontentloaded", timeout=30000)
+                            
+                            desc_elem = detail_page.locator(".job-description, .description, main, body").first
+                            if desc_elem.is_visible():
+                                description = desc_elem.inner_text()[:5000]
+                            else:
+                                description = detail_page.locator("body").inner_text()[:5000]
+                            
+                            detail_page.close()
+                        except Exception as desc_e:
+                            logger.warning("Could not fetch detail for %s: %s", href, desc_e)
+                            desc_elem = item.select_one(".description, .job-description, p")
+                            description = desc_elem.get_text(strip=True) if desc_elem else f"Job opportunity in {job_location}"
 
                         job = Job(
                             id=job_id,

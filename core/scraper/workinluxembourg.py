@@ -93,12 +93,30 @@ class WorkInLuxembourgScraper(BaseJobScraper):
                             
                             job_id = hashlib.md5(href.encode()).hexdigest()
 
+                            # FETCH FULL DESCRIPTION
+                            description = ""
+                            try:
+                                logger.info("Fetching Work in Luxembourg detail: %s", title)
+                                detail_page = context.new_page()
+                                detail_page.goto(href, wait_until="domcontentloaded", timeout=30000)
+                                
+                                desc_elem = detail_page.locator(".offer-details, .job-description, main, body").first
+                                if desc_elem.is_visible():
+                                    description = desc_elem.inner_text()[:5000]
+                                else:
+                                    description = detail_page.locator("body").inner_text()[:5000]
+                                
+                                detail_page.close()
+                            except Exception as desc_e:
+                                logger.warning("Could not fetch detail for %s: %s", href, desc_e)
+                                description = "Source: Work in Luxembourg (ADEM Official Portal)"
+
                             job = Job(
                                 id=job_id,
                                 title=title,
                                 company=company,
                                 location=job_location,
-                                description="Source: Work in Luxembourg (ADEM Official Portal)",
+                                description=description,
                                 application_url=href,
                                 platform="WorkInLuxembourg",
                                 date_found=datetime.now().isoformat()

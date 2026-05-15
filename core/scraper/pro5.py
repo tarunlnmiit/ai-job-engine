@@ -22,13 +22,13 @@ class Pro5Scraper(BaseJobScraper):
                 page = await context.new_page()
                 
                 # Pro5 jobs page
-                url = "https://pro5.ai/jobs/"
+                url = "https://www.pro5.ai/roles/"
                 
                 logger.info("Navigating to %s", url)
                 await page.goto(url, wait_until="networkidle", timeout=60000)
                 await page.wait_for_timeout(5000)
                 
-                links = await page.query_selector_all('a[href*="/jobs/"]')
+                links = await page.query_selector_all('a[href*="/role"]')
                 
                 # Pre-extract to avoid context destroyed
                 link_data = []
@@ -43,9 +43,11 @@ class Pro5Scraper(BaseJobScraper):
                 seen_urls = set()
                 for data in link_data:
                     href = data["href"]
-                    if "/jobs/search" in href or href == "/jobs/": continue
+                    # Clean href
+                    clean_href = href.strip().rstrip('/')
+                    if "search" in clean_href.lower() or clean_href == "/roles" or clean_href == "https://www.pro5.ai/roles": continue
                     
-                    full_url = href if href.startswith("http") else f"https://pro5.ai{href}"
+                    full_url = href if href.startswith("http") else f"https://www.pro5.ai{href}"
                     if full_url in seen_urls: continue
                     seen_urls.add(full_url)
                     

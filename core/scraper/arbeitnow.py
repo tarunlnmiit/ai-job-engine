@@ -43,7 +43,7 @@ class ArbeitNowScraper(BaseJobScraper):
             all_jobs = self._role_cache[role]
         else:
             # 2. Perform global scrape for the role
-            all_jobs = self._search_playwright(role, max_pages)
+            all_jobs = self._search_playwright(role, location, max_pages)
             self._role_cache[role] = all_jobs
             self._cache_time[role] = now
 
@@ -61,7 +61,7 @@ class ArbeitNowScraper(BaseJobScraper):
         logger.info("ArbeitNow search complete: %d jobs matched from %d total for role", len(filtered_jobs), len(all_jobs))
         return filtered_jobs
 
-    def _search_playwright(self, role: str, max_pages: int) -> list[Job]:
+    def _search_playwright(self, role: str, location: str, max_pages: int) -> list[Job]:
         if not BS_AVAILABLE:
             return []
 
