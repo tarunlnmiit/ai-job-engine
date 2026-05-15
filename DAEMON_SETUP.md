@@ -98,11 +98,16 @@ python3 core/scheduler/scoring_daemon.py --context EU --batch-size 10
 
 ### Session Limit Handling
 
-If Claude returns "usage limit reached", daemon:
-1. Captures retry time from error message
-2. Logs it: `SESSION LIMIT REACHED — retry after X:XXpm`
-3. Exits gracefully (cron will retry at next scheduled time)
-4. Already-scored jobs are saved to DB/CSV
+If Claude returns "usage limit reached" **between 1-3 AM IST**:
+1. Waits 60s, then retries the batch
+2. If still limited, waits 2m and tries once more
+3. If persists, exits gracefully (cron will retry next night)
+
+If limit hit **after 3 AM IST**:
+1. Exits immediately
+2. Already-scored jobs are saved to DB/CSV
+
+Rationale: 2-hour window (1-3 AM) allows daemon to retry & recover from transient limits without blocking overnight.
 
 ### Logs
 

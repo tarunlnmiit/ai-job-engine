@@ -2,6 +2,7 @@
 """
 Daemon to score jobs via Claude subprocess.
 Runs at 1 AM IST via cron. Scores in batches, saves after each batch.
+Retries on session limit until 3 AM IST.
 """
 
 import os
@@ -10,6 +11,7 @@ import json
 import time
 from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -22,6 +24,17 @@ from core.ui.style import get_resume_path
 from core.scorer.claude_subprocess_scorer import score_batch_claude_subprocess
 
 logger = get_logger("scheduler.scoring_daemon")
+
+
+def is_within_window(start_hour: int = 1, end_hour: int = 3) -> bool:
+    """Check if current IST time is within the window (e.g., 1 AM to 3 AM)."""
+    try:
+        ist = ZoneInfo("Asia/Kolkata")
+        now = datetime.now(ist)
+        return start_hour <= now.hour < end_hour
+    except Exception as e:
+        logger.error("Failed to check time window: %s", e)
+        return True  # Assume we're in window if can't determine
 
 
 def run_scoring_daemon(resume_context: str = "EU", batch_size: int = None):
@@ -94,9 +107,28 @@ def run_scoring_daemon(resume_context: str = "EU", batch_size: int = None):
         results, retry_time = score_batch_claude_subprocess(resume_text, jobs_to_score, model)
 
         if retry_time:
-            logger.error("SESSION LIMIT REACHED — retry after %s", retry_time)
-            logger.info("Daemon stopping. %d jobs scored total in %d batches.", total_saved, batch_num - 1)
-            return True  # Exit gracefully, cron will retry later
+            logger.warning("SESSION LIMIT REACHED — retry after %s", retry_time)
+
+            # Check if we're still within 1-3 AM window
+            if is_within_window(start_hour=1, end_hour=3):
+                logger.info("Within 1-3 AM window — waiting 60s before retry...")
+                time.sleep(60)
+                logger.info("Retrying batch %d...", batch_num)
+                # Retry this batch
+                results, retry_time = score_batch_claude_subprocess(resume_text, jobs_to_score, model)
+                if retry_time:
+                    logger.error("Still rate limited after retry. Waiting 2 minutes...")
+                    time.sleep(120)
+                    # One more attempt
+                    results, retry_time = score_batch_claude_subprocess(resume_text, jobs_to_score, model)
+                    if retry_time:
+                        logger.error("Rate limit persists after 2nd retry. Exiting window.")
+                        logger.info("Daemon stopping. %d jobs scored total in %d batches.", total_saved, batch_num - 1)
+                        return True
+            else:
+                logger.error("Outside 1-3 AM window. Exiting.")
+                logger.info("Daemon stopping. %d jobs scored total in %d batches.", total_saved, batch_num - 1)
+                return True
 
         if not results:
             logger.warning("Batch %d returned no results — skipping", batch_num)
