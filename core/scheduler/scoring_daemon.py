@@ -109,26 +109,34 @@ def run_scoring_daemon(resume_context: str = "EU", batch_size: int = None):
         if retry_time:
             logger.warning("SESSION LIMIT REACHED — retry after %s", retry_time)
 
-            # Check if we're still within 1-3 AM window
-            if is_within_window(start_hour=1, end_hour=3):
-                logger.info("Within 1-3 AM window — waiting 60s before retry...")
-                time.sleep(60)
-                logger.info("Retrying batch %d...", batch_num)
-                # Retry this batch
+            # Retry loop: keep trying until 3 AM IST or success
+            retry_attempt = 0
+            backoff_secs = 60
+            while retry_time and is_within_window(start_hour=1, end_hour=3):
+                retry_attempt += 1
+                logger.info("Retry attempt %d: waiting %ds...", retry_attempt, backoff_secs)
+                time.sleep(backoff_secs)
+
+                # Exponential backoff: 60s, 120s, 240s, 480s, etc
+                backoff_secs = min(backoff_secs * 2, 600)  # Cap at 10 min
+
+                logger.info("Retrying batch %d (attempt %d)...", batch_num, retry_attempt)
                 results, retry_time = score_batch_claude_subprocess(resume_text, jobs_to_score, model)
-                if retry_time:
-                    logger.error("Still rate limited after retry. Waiting 2 minutes...")
-                    time.sleep(120)
-                    # One more attempt
-                    results, retry_time = score_batch_claude_subprocess(resume_text, jobs_to_score, model)
-                    if retry_time:
-                        logger.error("Rate limit persists after 2nd retry. Exiting window.")
-                        logger.info("Daemon stopping. %d jobs scored total in %d batches.", total_saved, batch_num - 1)
-                        return True
-            else:
-                logger.error("Outside 1-3 AM window. Exiting.")
-                logger.info("Daemon stopping. %d jobs scored total in %d batches.", total_saved, batch_num - 1)
-                return True
+
+                if not retry_time:
+                    logger.info("✅ Batch %d succeeded after %d retries", batch_num, retry_attempt)
+                    break
+
+            # Check window after retry loop
+            if retry_time:
+                if not is_within_window(start_hour=1, end_hour=3):
+                    logger.warning("Outside 1-3 AM window — stopping retry loop. Exiting daemon.")
+                    logger.info("Daemon stopping. %d jobs scored total in %d batches.", total_saved, batch_num - 1)
+                    return True
+                else:
+                    logger.error("Still rate limited at end of window. Exiting daemon.")
+                    logger.info("Daemon stopping. %d jobs scored total in %d batches.", total_saved, batch_num - 1)
+                    return True
 
         if not results:
             logger.warning("Batch %d returned no results — skipping", batch_num)
