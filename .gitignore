@@ -45,19 +45,16 @@ Thumbs.db
 chrome_user_data/
 chatgpt_user_data/
 twitter_user_data/
+*_user_data/
 playwright-log.txt
 *.json.bak
-
-# Scraper Exports (if not already covered by data/)
-*_history_export.json
+*_export.json
 twitter_*_tweets.json
-linkedin_jobs.csv
-naukri_jobs.csv
-indeed_jobs.csv
-wellfound_jobs.csv
-hirist_jobs.csv
-instahyre_jobs.csv
-weworkremotely_jobs.csv
-relocateme_jobs.csv
-lever_jobs.csv
-arbeitnow_jobs.csv
+chatgpt_history_export.json
+
+# Local Databases and CSVs
+data/
+jobs.db
+*.db
+*.csv
+*.log

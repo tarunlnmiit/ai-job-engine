@@ -141,7 +141,9 @@ class TuringScraper(BaseJobScraper):
                 else:
                     logger.info("Turing: Found %d job cards", len(cards))
                     seen_urls: set[str] = set()
-                    for card in cards[:25]:
+                    count = 0
+                    for card in cards:
+                        if count >= 20: break # Limit for performance
                         try:
                             href = ""
                             for a in card.find_all("a", href=True):
@@ -150,7 +152,7 @@ class TuringScraper(BaseJobScraper):
                             if not href:
                                 href = card.get("href", "")
                             full_url = href if href.startswith("http") else f"https://work.turing.com{href}" if href else ""
-                            if full_url in seen_urls:
+                            if not full_url or full_url in seen_urls:
                                 continue
                             seen_urls.add(full_url)
 
@@ -172,8 +174,31 @@ class TuringScraper(BaseJobScraper):
                             )
                             salary = sal_el.get_text(strip=True) if sal_el else None
 
-                            desc_el = card.select_one("[class*='description'], [class*='Description'], [class*='summary']")
-                            description = desc_el.get_text("\n", strip=True) if desc_el else f"Remote contractual role at Turing. Role: {title}"
+                            # Deep scrape description
+                            logger.info("Turing: Fetching details for %s", full_url)
+                            description = ""
+                            try:
+                                # Re-use page to avoid opening too many windows
+                                page.goto(full_url, wait_until="domcontentloaded", timeout=30000)
+                                page.wait_for_timeout(2000)
+                                detail_soup = BeautifulSoup(page.content(), "html.parser")
+                                
+                                # Turing description usually in a specific div
+                                desc_panel = (
+                                    detail_soup.select_one("[class*='description']")
+                                    or detail_soup.select_one("[class*='Description']")
+                                    or detail_soup.select_one("[class*='content']")
+                                    or detail_soup.select_one("main")
+                                )
+                                if desc_panel:
+                                    description = desc_panel.get_text("\n", strip=True)
+                            except Exception as e:
+                                logger.warning("Turing: Could not fetch details for %s: %s", full_url, e)
+
+                            if not description:
+                                # Fallback to card text
+                                desc_el = card.select_one("[class*='description'], [class*='Description'], [class*='summary']")
+                                description = desc_el.get_text("\n", strip=True) if desc_el else f"Remote contractual role at Turing. Role: {title}"
 
                             job_id = hashlib.md5((full_url or title).encode()).hexdigest()[:10]
                             job = Job(
@@ -181,7 +206,7 @@ class TuringScraper(BaseJobScraper):
                                 title=title,
                                 company="Turing",
                                 location=loc_text,
-                                description=description,
+                                description=description[:5000],
                                 salary=salary,
                                 platform="turing",
                                 application_url=full_url or search_url,
@@ -189,7 +214,15 @@ class TuringScraper(BaseJobScraper):
                                 date_found=datetime.now().strftime("%Y-%m-%d"),
                             )
                             jobs.append(job)
+                            count += 1
                             logger.debug("Turing: Scraped '%s'", title)
+                            
+                            # Navigate back to results for next card if we were reusing page
+                            # Wait, we are in a loop over 'cards' which were from the initial 'page.content()'
+                            # So we can just continue to next card's full_url
+                            # BUT we need to be careful if the search results page needs to be restored.
+                            # Actually, it's better to just go to each URL and then go back or use new pages.
+                            # Since we already have the 'cards' list from the initial soup, we are fine.
 
                         except Exception as e:
                             logger.error("Turing: Error on card: %s", e)

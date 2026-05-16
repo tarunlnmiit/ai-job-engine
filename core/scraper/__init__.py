@@ -19,7 +19,6 @@ from .andela import AndelaScraper
 from .arc_dev import ArcDevScraper
 from .mercor import MercorScraper
 from .turing import TuringScraper
-from .pro5 import Pro5Scraper
 from .workinluxembourg import WorkInLuxembourgScraper
 # from .make_it_in_germany import MakeItInGermanyScraper
 # from .work_in_denmark import WorkInDenmarkScraper
@@ -54,7 +53,6 @@ __all__ = [
     "ArcDevScraper",
     "MercorScraper",
     "TuringScraper",
-    "Pro5Scraper",
     "WorkInLuxembourgScraper",
     "MakeItInGermanyScraper",
     "WorkInDenmarkScraper",

@@ -163,6 +163,25 @@ class JobCache:
             logger.error("Error deleting jobs for platform %s: %s", platform, e)
             return False
 
+    def delete_jobs_by_ids(self, job_ids: List[str]) -> bool:
+        """Delete specific jobs by their IDs from cache."""
+        logger.info("Deleting %d jobs by IDs", len(job_ids))
+        if not job_ids:
+            return True
+        try:
+            conn = sqlite3.connect(self.db_path)
+            c = conn.cursor()
+            placeholders = ",".join(["?"] * len(job_ids))
+            c.execute(f"DELETE FROM jobs WHERE id IN ({placeholders})", job_ids)
+            count = conn.total_changes
+            conn.commit()
+            conn.close()
+            logger.info("Deleted %d jobs", count)
+            return True
+        except Exception as e:
+            logger.error("Error deleting jobs by IDs: %s", e)
+            return False
+
     def clear_all(self) -> bool:
         """Delete all jobs from cache."""
         logger.warning("Clearing all jobs from database")

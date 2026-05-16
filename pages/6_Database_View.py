@@ -63,14 +63,49 @@ if search_term:
 
 st.markdown(f"**Showing {len(filtered_df)} jobs**")
 
+# Field selection
+st.subheader("Display Columns")
+all_columns = df.columns.tolist()
+default_columns = [col for col in ["date_found", "score", "title", "company", "location", "platform", "status"] if col in all_columns]
+selected_columns = st.multiselect("Select Columns to Display", all_columns, default=default_columns)
+
 # Display table
-st.dataframe(
-    filtered_df[[
-        "date_found", "score", "title", "company", 
-        "location", "platform", "status"
-    ]].sort_values("date_found", ascending=False),
-    width="stretch"
-)
+if selected_columns:
+    # Sort and reset index so selection indices match row indices
+    if "date_found" in filtered_df.columns:
+        filtered_df = filtered_df.sort_values("date_found", ascending=False).reset_index(drop=True)
+    else:
+        filtered_df = filtered_df.reset_index(drop=True)
+
+    selection = st.dataframe(
+        filtered_df,
+        column_order=selected_columns,
+        hide_index=True,
+        width="stretch",
+        selection_mode="multi-row",
+        on_select="rerun"
+    )
+    
+    selected_rows = selection.selection.rows
+    if selected_rows:
+        st.write(f"**Selected {len(selected_rows)} jobs**")
+        if st.button("🗑️ Delete Selected Rows", type="primary"):
+            ids_to_delete = filtered_df.iloc[selected_rows]["id"].tolist()
+            
+            with st.spinner(f"Deleting {len(ids_to_delete)} jobs..."):
+                from core.tracker.csv_tracker import CSVTracker
+                tracker = CSVTracker()
+                
+                db_success = db.delete_jobs_by_ids(ids_to_delete)
+                csv_success = tracker.delete_jobs_by_ids(ids_to_delete)
+                
+                if db_success and csv_success:
+                    st.success(f"Successfully deleted {len(ids_to_delete)} jobs!")
+                    st.rerun()
+                else:
+                    st.error("Partial or full failure in deletion. Check logs.")
+else:
+    st.warning("Please select at least one column to display.")
 
 # Detailed View
 if st.checkbox("Show Job Details"):

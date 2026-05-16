@@ -42,7 +42,10 @@ class ArcDevScraper(BaseJobScraper):
                     except: continue
 
                 seen_urls = set()
+                count = 0
                 for data in link_data:
+                    if count >= 20: break # Limit for performance
+                    
                     href = data["href"]
                     if "/remote-jobs/details/" not in href and "/remote-jobs/j/" not in href: continue
                     
@@ -55,6 +58,26 @@ class ArcDevScraper(BaseJobScraper):
                     
                     job_id = hashlib.md5(full_url.encode()).hexdigest()[:10]
                     
+                    # Fetch detailed description
+                    logger.info("Arc.dev: Fetching details for %s", full_url)
+                    description = ""
+                    try:
+                        detail_page = await context.new_page()
+                        await detail_page.goto(full_url, wait_until="networkidle", timeout=30000)
+                        
+                        # Arc.dev usually has descriptions in a specific container
+                        content_el = await detail_page.query_selector('div[class*="JobDetails"], div[class*="Description"], main')
+                        if content_el:
+                            description = await content_el.inner_text()
+                        
+                        if not description:
+                            description = await detail_page.inner_text('body')
+                            
+                        await detail_page.close()
+                    except Exception as e:
+                        logger.warning("Could not fetch Arc.dev description for %s: %s", full_url, e)
+                        description = f"Remote contractual role at Arc.dev. Match: {role}"
+
                     job = Job(
                         id=job_id,
                         title=title,
@@ -62,10 +85,11 @@ class ArcDevScraper(BaseJobScraper):
                         location="Remote",
                         application_url=full_url,
                         platform="Arc.dev",
-                        description=f"Remote contractual role at Arc.dev. Match: {role}",
+                        description=description[:5000],
                         date_found=datetime.now().isoformat()
                     )
                     jobs.append(job)
+                    count += 1
                 
                 logger.info("Arc.dev scrape complete — %d jobs found", len(jobs))
                 

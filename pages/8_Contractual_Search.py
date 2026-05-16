@@ -82,9 +82,9 @@ with col_main:
         platforms = st.multiselect(
             "Select Contractual-focused portals",
             options=[
-                "uplers", "braintrust", "andela", "arc_dev", "mercor", "turing", "pro5"
+                "uplers", "braintrust", "andela", "arc_dev", "mercor", "turing"
             ],
-            default=["uplers", "braintrust", "andela", "arc_dev", "mercor", "turing", "pro5"]
+            default=["uplers", "braintrust", "andela", "arc_dev", "mercor", "turing"]
         )
         
         max_pages = st.number_input("Search Depth (Pages per location)", value=1, min_value=1, max_value=5)
@@ -107,7 +107,7 @@ if submitted:
     with st.status("🌍 Orchestrating Contractual Search...", expanded=True) as status:
         from core.scraper import (
             UplersScraper, BraintrustScraper, AndelaScraper, 
-            ArcDevScraper, MercorScraper, TuringScraper, Pro5Scraper
+            ArcDevScraper, MercorScraper, TuringScraper
         )
         from core.tracker.db import JobCache
         from core.tracker.csv_tracker import CSVTracker
@@ -116,8 +116,7 @@ if submitted:
         
         scraper_map = {
             "uplers": UplersScraper, "braintrust": BraintrustScraper, "andela": AndelaScraper,
-            "arc_dev": ArcDevScraper, "mercor": MercorScraper, "turing": TuringScraper,
-            "pro5": Pro5Scraper
+            "arc_dev": ArcDevScraper, "mercor": MercorScraper, "turing": TuringScraper
         }
         
         from core.ui.style import get_resume_path
@@ -141,6 +140,8 @@ if submitted:
         for platform in platforms:
             if platform not in scraper_map: continue
             scraper = scraper_map[platform]()
+            db = JobCache(); tracker = CSVTracker()
+            
             for location in locations:
                 for role in roles:
                     status.write(f"🔍 {platform}: {role} in {location}...")
@@ -150,30 +151,37 @@ if submitted:
                             jobs = asyncio.run(scraper.search(role=search_role, location=location, max_pages=max_pages))
                         else:
                             jobs = scraper.search(role=search_role, location=location, max_pages=max_pages)
-                        all_jobs.extend(jobs)
+                        
+                        if jobs:
+                            status.write(f"💾 {platform}: Found {len(jobs)} jobs. Saving new entries...")
+                            existing = tracker.get_all_jobs()
+                            existing_ids = {str(ej.get("Job ID")).strip() for ej in existing}
+                            
+                            new_saved = 0
+                            for job in jobs:
+                                j_dict = job.to_dict()
+                                j_dict["job_type"] = "Remote Contractual"
+                                jid = str(job.id).strip()
+                                
+                                if jid not in existing_ids:
+                                    j_dict["status"] = "new"
+                                    j_dict["score"] = ""
+                                    db.add_job(j_dict); tracker.update_job(j_dict)
+                                    new_saved += 1
+                                    
+                            if new_saved > 0:
+                                status.write(f"✅ {platform}: Saved {new_saved} new jobs.")
+                            all_jobs.extend(jobs)
                     except Exception as e:
                         status.write(f"⚠️ Error on {platform}: {e}")
         
         if all_jobs:
-            status.write(f"⭐ Found {len(all_jobs)} jobs. Commencing AI Scoring...")
-            jobs_dicts = [j.to_dict() for j in all_jobs]
-            db = JobCache(); tracker = CSVTracker()
-            
             if skip_scoring:
-                status.write(f"💾 Saving {len(all_jobs)} unscored jobs...")
-                existing = tracker.get_all_jobs()
-                existing_ids = {str(ej.get("Job ID")) for ej in existing}
-                new_count = 0
-                for job in all_jobs:
-                    if str(job.id) not in existing_ids:
-                        j_dict = job.to_dict()
-                        j_dict["status"] = "new"
-                        j_dict["score"] = ""
-                        j_dict["job_type"] = "Remote Contractual"
-                        db.add_job(j_dict); tracker.update_job(j_dict)
-                        new_count += 1
-                status.update(label=f"✅ Saved {new_count} new unscored jobs!", state="complete")
+                status.update(label=f"✅ Mission Complete! Saved {len(all_jobs)} jobs without scoring.", state="complete")
             else:
+                status.write(f"⭐ Commencing AI Scoring for {len(all_jobs)} jobs...")
+                jobs_dicts = [j.to_dict() for j in all_jobs]
+                
                 def on_save(results):
                     job_obj_map = {str(j.id).strip(): j for j in all_jobs}
                     for res in results:

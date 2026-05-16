@@ -1,8 +1,0 @@
-2026/05/15-21:23:23.758 319da2 Creating DB /Users/tarungupta/Making It Big/Claude/AI Job Engine/job_hunt_tool/andela_user_data/Default/Local Storage/leveldb since it was missing.
-2026/05/15-21:23:23.762 319da2 Reusing MANIFEST /Users/tarungupta/Making It Big/Claude/AI Job Engine/job_hunt_tool/andela_user_data/Default/Local Storage/leveldb/MANIFEST-000001
-2026/05/15-21:24:23.767 319da9 Level-0 table #5: started
-2026/05/15-21:24:23.770 319da9 Level-0 table #5: 46251 bytes OK
-2026/05/15-21:24:23.771 319da9 Delete type=0 #3
-2026/05/15-21:27:27.026 319da9 Level-0 table #7: started
-2026/05/15-21:27:27.028 319da9 Level-0 table #7: 27799 bytes OK
-2026/05/15-21:27:27.032 319da9 Delete type=0 #4

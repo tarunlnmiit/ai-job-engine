@@ -111,6 +111,22 @@ class CSVTracker:
             logger.error("Error deleting jobs for platform %s from CSV: %s", platform, e)
             return False
 
+    def delete_jobs_by_ids(self, job_ids: list[str]) -> bool:
+        """Delete specific jobs by their IDs from CSV."""
+        if not os.path.exists(self.filepath) or not job_ids:
+            return True
+        try:
+            df = pd.read_csv(self.filepath, dtype=str)
+            initial_count = len(df)
+            df = df[~df["Job ID"].isin(job_ids)]
+            deleted_count = initial_count - len(df)
+            df.to_csv(self.filepath, index=False)
+            logger.info("Deleted %d jobs from CSV", deleted_count)
+            return True
+        except Exception as e:
+            logger.error("Error deleting jobs by IDs from CSV: %s", e)
+            return False
+
     def clear_all(self) -> bool:
         """Delete all jobs from CSV tracker."""
         logger.warning("Clearing all jobs from CSV tracker")

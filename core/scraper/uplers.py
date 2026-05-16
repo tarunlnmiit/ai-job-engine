@@ -24,6 +24,33 @@ class UplersScraper(BaseJobScraper):
             viewport={"width": 1280, "height": 900} if not headless else None,
         )
 
+    def _handle_popups(self, page):
+        """Handle annoying Uplers popups like 'Profile Outdated'."""
+        try:
+            # The user mentioned a 'Skip' button on an 'outdated profile' dialog
+            # We'll try to find any button with 'Skip' or 'Update later' text
+            skip_selectors = [
+                "button:has-text('Skip')",
+                "button:has-text('Skip for now')",
+                "button:has-text('Update later')",
+                "span:has-text('Skip')",
+                ".modal-close",
+                "[class*='close']"
+            ]
+            for selector in skip_selectors:
+                try:
+                    btn = page.locator(selector).first
+                    if btn.is_visible(timeout=1500):
+                        logger.info("Uplers: Found popup element '%s', attempting to skip...", selector)
+                        btn.click()
+                        page.wait_for_timeout(1000)
+                        return True
+                except:
+                    continue
+        except Exception as e:
+            logger.debug("Uplers: Error during popup handling: %s", e)
+        return False
+
     @staticmethod
     def _is_logged_in(page) -> bool:
         url = page.url.lower()
@@ -53,7 +80,7 @@ class UplersScraper(BaseJobScraper):
         page.goto("https://platform.uplers.com", wait_until="domcontentloaded", timeout=30000)
 
         logger.info(
-            "🔔 Uplers: Log in manually in the browser window. Timeout: %ds...",
+            "🔔 Uplers: Log in manually in the browser window (e.g., using Google Login). Timeout: %ds...",
             CHALLENGE_TIMEOUT,
         )
         deadline = time.time() + CHALLENGE_TIMEOUT
@@ -75,6 +102,7 @@ class UplersScraper(BaseJobScraper):
         logger.info("Uplers Auth: ✅ Logged in! Cookies saved to %s", UPLERS_USER_DATA)
         page.goto(UPLERS_JOBS_URL, wait_until="domcontentloaded", timeout=60000)
         page.wait_for_timeout(3000)
+        self._handle_popups(page)
         return context, page
 
     def search(self, role: str, location: str = None, **kwargs) -> list[Job]:
@@ -99,12 +127,19 @@ class UplersScraper(BaseJobScraper):
                     context.close()
                     return []
 
+                # Construct search URL
+                search_query = role.replace(" ", "+")
+                search_url = f"{UPLERS_JOBS_URL}?search={search_query}"
+                logger.info("Uplers: Navigating to %s", search_url)
+                page.goto(search_url, wait_until="domcontentloaded", timeout=60000)
+
                 # Wait for SPA JS to fully render
                 try:
                     page.wait_for_load_state("networkidle", timeout=20000)
                 except Exception:
                     pass
                 page.wait_for_timeout(3000)
+                self._handle_popups(page)
 
                 # Scroll to trigger lazy-loaded cards
                 for _ in range(5):
@@ -200,6 +235,7 @@ class UplersScraper(BaseJobScraper):
                             page.goto(job_url, wait_until="domcontentloaded", timeout=30000)
 
                         page.wait_for_timeout(1500)
+                        self._handle_popups(page)
 
                         detail_soup = BeautifulSoup(page.content(), "html.parser")
 
@@ -236,17 +272,19 @@ class UplersScraper(BaseJobScraper):
                         date_el = panel.select_one("[class*='date'], [class*='Date'], [class*='posted'], time")
                         posted_date = date_el.get_text(strip=True) if date_el else None
 
-                        # Full description — largest text block
+                        # Full description — using specific Uplers selectors found in investigation
                         desc_el = (
-                            panel.select_one("[class*='description']")
-                            or panel.select_one("[class*='Description']")
-                            or panel.select_one("[class*='jd']")
-                            or panel.select_one("[class*='content']")
+                            detail_soup.select_one(".jobDescription #hsContent")
+                            or detail_soup.select_one(".jobDescription .HSContent")
+                            or (panel.select_one("[class*='description']") if panel else None)
+                            or (panel.select_one("[class*='Description']") if panel else None)
+                            or (panel.select_one("[class*='jd']") if panel else None)
+                            or (panel.select_one("[class*='content']") if panel else None)
                         )
                         if desc_el:
                             description = desc_el.get_text("\n", strip=True)
                         else:
-                            description = panel.get_text("\n", strip=True)[:3000]
+                            description = panel.get_text("\n", strip=True)[:3000] if panel else "No description found."
 
                         app_url = (
                             f"{UPLERS_JOBS_URL}?activeJob={job_key}"

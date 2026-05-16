@@ -53,6 +53,42 @@ class MercorScraper(BaseJobScraper):
                     
                     job_id = hashlib.md5(full_url.encode()).hexdigest()[:10]
                     
+                    # Fetch detailed description
+                    logger.info("Mercor: Fetching details for %s", full_url)
+                    description = ""
+                    try:
+                        detail_page = await context.new_page()
+                        await detail_page.goto(full_url, wait_until="networkidle", timeout=30000)
+                        
+                        # Try to find description in schema.org or specific divs
+                        desc_handle = await detail_page.query_selector('script[type="application/ld+json"]')
+                        if desc_handle:
+                            try:
+                                import json
+                                ld_data = json.loads(await desc_handle.inner_text())
+                                if isinstance(ld_data, dict):
+                                    description = ld_data.get("description", "")
+                                elif isinstance(ld_data, list):
+                                    for item in ld_data:
+                                        if item.get("@type") == "JobPosting":
+                                            description = item.get("description", "")
+                                            break
+                            except: pass
+                            
+                        if not description:
+                            # Fallback to main content area
+                            content_el = await detail_page.query_selector('main, article, .job-description')
+                            if content_el:
+                                description = await content_el.inner_text()
+                        
+                        if not description:
+                            description = await detail_page.inner_text('body')
+                            
+                        await detail_page.close()
+                    except Exception as e:
+                        logger.warning("Could not fetch Mercor description for %s: %s", full_url, e)
+                        description = f"Remote contractual role via Mercor AI. Match: {role}"
+
                     job = Job(
                         id=job_id,
                         title=text,
@@ -60,7 +96,7 @@ class MercorScraper(BaseJobScraper):
                         location="Remote",
                         application_url=full_url,
                         platform="Mercor",
-                        description=f"Remote contractual role via Mercor AI. Match: {role}",
+                        description=description[:5000], # Cap length
                         date_found=datetime.now().isoformat()
                     )
                     jobs.append(job)
