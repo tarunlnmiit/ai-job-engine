@@ -86,13 +86,20 @@ def score_batch_claude_subprocess(resume_text: str, jobs: List[dict], model: str
 
             # Check for usage limit error
             if result.returncode != 0:
-                stderr_text = result.stderr or "(no stderr)"
+                stderr_text = result.stderr or ""
+                stdout_text = result.stdout or ""
                 retry_time = parse_usage_limit_error(stderr_text)
                 if retry_time:
                     logger.warning("Claude usage limit reached — retry after %s", retry_time)
                     return [], retry_time
-                logger.error("Claude subprocess failed (rc=%d): stderr=%s stdout=%s",
-                           result.returncode, stderr_text[:300], result.stdout[:300])
+                logger.error("Claude subprocess failed (rc=%d)", result.returncode)
+                if stderr_text:
+                    logger.error("  stderr: %s", stderr_text)
+                if stdout_text:
+                    logger.error("  stdout: %s", stdout_text)
+                if not stderr_text and not stdout_text:
+                    logger.error("  (no output captured)")
+                logger.error("  prompt size: %d chars", len(prompt))
                 if attempt < 1:
                     time.sleep(5)
                 continue
