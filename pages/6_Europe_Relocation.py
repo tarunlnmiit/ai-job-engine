@@ -151,13 +151,21 @@ if submitted:
         db = JobCache()
         tracker = CSVTracker()
         csv_lock = threading.Lock()
+        db_lock = threading.Lock()
+        ids_lock = threading.Lock()
+        status_lock = threading.Lock()
+        counters_lock = threading.Lock()
+        futures_lock = threading.Lock()
 
         existing_ids = {str(ej.get("Job ID")) for ej in tracker.get_all_jobs()}
         roles = [r.strip() for r in roles_text.split("\n") if r.strip()]
 
-        total_scraped = 0
-        total_saved = 0
+        totals = {"scraped": 0, "saved": 0}
         scoring_futures = []
+
+        def log(msg):
+            with status_lock:
+                status.write(msg)
 
         def score_and_save(r_text, jobs_dicts):
             """Score a batch and write scores back to DB+CSV. Runs in thread."""
@@ -176,21 +184,22 @@ if submitted:
                     "missing_skills": res.get("missing_skills", []),
                     "recommendation": res.get("recommendation", ""),
                 }
-                db.add_job(scored)
+                with db_lock:
+                    db.add_job(scored)
                 with csv_lock:
                     tracker.update_job(scored)
                 count += 1
             return count
 
-        executor = ThreadPoolExecutor(max_workers=4) if not skip_scoring else None
+        score_executor = ThreadPoolExecutor(max_workers=4) if not skip_scoring else None
 
-        for platform in platforms:
+        def run_platform(platform):
             if platform not in scraper_map:
-                continue
+                return
             scraper = scraper_map[platform]()
             for country in countries:
                 for role in roles:
-                    status.write(f"🔍 {platform}: {role} in {country}...")
+                    log(f"🔍 {platform}: {role} in {country}...")
                     try:
                         search_role = f"{role} sponsorship" if platform == "linkedin" else role
                         if inspect.iscoroutinefunction(scraper.search):
@@ -198,37 +207,48 @@ if submitted:
                         else:
                             jobs = scraper.search(role=search_role, location=country, max_pages=max_pages)
 
-                        total_scraped += len(jobs)
+                        with counters_lock:
+                            totals["scraped"] += len(jobs)
 
-                        # Save new jobs immediately — dedup by ID
                         new_jobs_dicts = []
                         for job in jobs:
-                            if str(job.id) not in existing_ids:
-                                j_dict = job.to_dict()
-                                j_dict["status"] = "new"
-                                j_dict["score"] = ""
+                            jid_s = str(job.id)
+                            with ids_lock:
+                                if jid_s in existing_ids:
+                                    continue
+                                existing_ids.add(jid_s)
+                            j_dict = job.to_dict()
+                            j_dict["status"] = "new"
+                            j_dict["score"] = ""
+                            with db_lock:
                                 db.add_job(j_dict)
-                                with csv_lock:
-                                    tracker.update_job(j_dict)
-                                existing_ids.add(str(job.id))
-                                new_jobs_dicts.append(j_dict)
-                                total_saved += 1
+                            with csv_lock:
+                                tracker.update_job(j_dict)
+                            new_jobs_dicts.append(j_dict)
+                            with counters_lock:
+                                totals["saved"] += 1
 
                         if new_jobs_dicts:
-                            status.write(f"  💾 {len(new_jobs_dicts)} new saved ({platform}/{country})")
+                            log(f"  💾 {len(new_jobs_dicts)} new saved ({platform}/{country})")
 
-                        # Submit batch for parallel scoring
-                        if not skip_scoring and new_jobs_dicts and executor:
-                            scoring_futures.append(executor.submit(score_and_save, resume_text, new_jobs_dicts))
+                        if not skip_scoring and new_jobs_dicts and score_executor:
+                            fut = score_executor.submit(score_and_save, resume_text, new_jobs_dicts)
+                            with futures_lock:
+                                scoring_futures.append(fut)
 
                     except Exception as e:
-                        status.write(f"⚠️ Error on {platform}/{country}: {e}")
+                        log(f"⚠️ Error on {platform}/{country}: {e}")
 
-        status.write(f"🔎 Scraping done — {total_saved} new jobs saved from {total_scraped} found. Waiting for scoring...")
+        platform_workers = max(1, min(len(platforms), 8))
+        with ThreadPoolExecutor(max_workers=platform_workers) as platform_executor:
+            list(platform_executor.map(run_platform, platforms))
+
+        status.write(f"🔎 Scraping done — {totals['saved']} new jobs saved from {totals['scraped']} found. Waiting for scoring...")
 
         total_scored = 0
-        if executor:
-            executor.shutdown(wait=True)
+        total_saved = totals["saved"]
+        if score_executor:
+            score_executor.shutdown(wait=True)
             for future in scoring_futures:
                 try:
                     total_scored += future.result()

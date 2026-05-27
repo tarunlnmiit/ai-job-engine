@@ -5,7 +5,7 @@ import yaml
 import os
 from pathlib import Path
 from dotenv import load_dotenv
-from core.ui.style import apply_custom_style, safe_score
+from core.ui.style import apply_custom_style
 
 load_dotenv()
 
@@ -40,9 +40,8 @@ with col_main:
         with c1:
             roles_text = st.text_area(
                 "Final Roles List",
-                value=st.session_state.get("roles_text", ""),
                 height=150,
-                key="final_roles_list"
+                key="roles_text"
             )
         with c2:
             locations_text = st.text_area(
@@ -164,6 +163,9 @@ if submitted:
             )
             from datetime import datetime
             import asyncio, inspect
+            import threading
+            from concurrent.futures import ThreadPoolExecutor
+            from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
 
             from core.ui.style import get_resume_path
             # Use the selected mission context for scoring (mode="score")
@@ -191,20 +193,38 @@ if submitted:
             }
 
             all_jobs = []
-            for platform in platforms:
-                if platform not in scraper_map: continue
+            all_jobs_lock = threading.Lock()
+            status_lock = threading.Lock()
+            _ctx = get_script_run_ctx()
+
+            def log(msg):
+                with status_lock:
+                    try:
+                        status.write(msg)
+                    except Exception:
+                        pass
+
+            def run_platform(platform):
+                add_script_run_ctx(threading.current_thread(), _ctx)
+                if platform not in scraper_map:
+                    return
                 scraper = scraper_map[platform]()
                 for role in search_config["search"]["roles"]:
                     for location in search_config["search"]["locations"]:
-                        status.write(f"🔍 Searching {platform}: {role} in {location}...")
+                        log(f"🔍 Searching {platform}: {role} in {location}...")
                         try:
                             if inspect.iscoroutinefunction(scraper.search):
                                 jobs = asyncio.run(scraper.search(role=role, location=location, remote=remote_ok, max_pages=int(max_pages)))
                             else:
                                 jobs = scraper.search(role=role, location=location, remote=remote_ok, max_pages=int(max_pages))
-                            all_jobs.extend(jobs)
+                            with all_jobs_lock:
+                                all_jobs.extend(jobs)
                         except Exception as e:
-                            status.write(f"⚠️ Error on {platform}: {e}")
+                            log(f"⚠️ Error on {platform}: {e}")
+
+            platform_workers = max(1, min(len(platforms), 8))
+            with ThreadPoolExecutor(max_workers=platform_workers) as ex:
+                list(ex.map(run_platform, platforms))
 
             if all_jobs:
                 status.write(f"⭐ Found {len(all_jobs)} jobs. Commencing AI Scoring...")

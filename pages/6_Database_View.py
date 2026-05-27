@@ -40,7 +40,7 @@ st.divider()
 st.subheader("Filter Database")
 f_col1, f_col2, f_col3 = st.columns(3)
 
-platforms = sorted(df["platform"].unique().tolist()) if "platform" in df.columns else []
+platforms = db.get_unique_platforms()
 sel_platforms = f_col1.multiselect("Platforms", platforms, default=platforms)
 
 min_score = f_col2.slider("Min Score", 0, 100, 0)

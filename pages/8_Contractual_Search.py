@@ -5,6 +5,8 @@ from pathlib import Path
 from datetime import datetime
 import asyncio
 import inspect
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dotenv import load_dotenv
 from core.ui.style import apply_custom_style, safe_score
 
@@ -136,44 +138,64 @@ if submitted:
         
         all_jobs = []
         roles = [r.strip() for r in roles_text.split("\n") if r.strip()]
-        
-        for platform in platforms:
-            if platform not in scraper_map: continue
+
+        db = JobCache(); tracker = CSVTracker()
+        existing_ids = {str(ej.get("Job ID")).strip() for ej in tracker.get_all_jobs()}
+
+        db_lock = threading.Lock()
+        csv_lock = threading.Lock()
+        ids_lock = threading.Lock()
+        status_lock = threading.Lock()
+        all_jobs_lock = threading.Lock()
+
+        def log(msg):
+            with status_lock:
+                status.write(msg)
+
+        def run_platform(platform):
+            if platform not in scraper_map:
+                return
             scraper = scraper_map[platform]()
-            db = JobCache(); tracker = CSVTracker()
-            
             for location in locations:
                 for role in roles:
-                    status.write(f"🔍 {platform}: {role} in {location}...")
+                    log(f"🔍 {platform}: {role} in {location}...")
                     try:
                         search_role = role
                         if inspect.iscoroutinefunction(scraper.search):
                             jobs = asyncio.run(scraper.search(role=search_role, location=location, max_pages=max_pages))
                         else:
                             jobs = scraper.search(role=search_role, location=location, max_pages=max_pages)
-                        
-                        if jobs:
-                            status.write(f"💾 {platform}: Found {len(jobs)} jobs. Saving new entries...")
-                            existing = tracker.get_all_jobs()
-                            existing_ids = {str(ej.get("Job ID")).strip() for ej in existing}
-                            
-                            new_saved = 0
-                            for job in jobs:
-                                j_dict = job.to_dict()
-                                j_dict["job_type"] = "Remote Contractual"
-                                jid = str(job.id).strip()
-                                
-                                if jid not in existing_ids:
-                                    j_dict["status"] = "new"
-                                    j_dict["score"] = ""
-                                    db.add_job(j_dict); tracker.update_job(j_dict)
-                                    new_saved += 1
-                                    
-                            if new_saved > 0:
-                                status.write(f"✅ {platform}: Saved {new_saved} new jobs.")
+
+                        if not jobs:
+                            continue
+
+                        log(f"💾 {platform}: Found {len(jobs)} jobs. Saving new entries...")
+                        new_saved = 0
+                        for job in jobs:
+                            jid = str(job.id).strip()
+                            with ids_lock:
+                                if jid in existing_ids:
+                                    continue
+                                existing_ids.add(jid)
+                            j_dict = job.to_dict()
+                            j_dict["job_type"] = "Remote Contractual"
+                            j_dict["status"] = "new"
+                            j_dict["score"] = ""
+                            with db_lock:
+                                db.add_job(j_dict)
+                            with csv_lock:
+                                tracker.update_job(j_dict)
+                            new_saved += 1
+                        if new_saved > 0:
+                            log(f"✅ {platform}: Saved {new_saved} new jobs.")
+                        with all_jobs_lock:
                             all_jobs.extend(jobs)
                     except Exception as e:
-                        status.write(f"⚠️ Error on {platform}: {e}")
+                        log(f"⚠️ Error on {platform}: {e}")
+
+        platform_workers = max(1, min(len(platforms), 8))
+        with ThreadPoolExecutor(max_workers=platform_workers) as ex:
+            list(ex.map(run_platform, platforms))
         
         if all_jobs:
             if skip_scoring:
