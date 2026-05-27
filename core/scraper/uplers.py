@@ -1,15 +1,14 @@
 import os
-import time
 import hashlib
 from datetime import datetime
 from .base import BaseJobScraper, Job
+from .auth_handler import SyncAuthHandler
 from logger import get_logger
 
 logger = get_logger("scraper.uplers")
 
 UPLERS_USER_DATA = os.path.join(os.getcwd(), "uplers_user_data")
 UPLERS_JOBS_URL = "https://platform.uplers.com/talent/all-opportunities"
-CHALLENGE_TIMEOUT = 600
 
 
 class UplersScraper(BaseJobScraper):
@@ -61,48 +60,22 @@ class UplersScraper(BaseJobScraper):
 
     def _ensure_authenticated(self, playwright):
         """Return (context, page) with authenticated Uplers session, or (None, None)."""
-        logger.info("Uplers Auth [Stage 1]: Visible browser with saved cookies...")
-        context = self._launch_context(playwright, headless=False)
-        page = context.new_page()
-        page.goto(UPLERS_JOBS_URL, wait_until="domcontentloaded", timeout=60000)
-        page.wait_for_timeout(4000)
-
-        if self._is_logged_in(page):
-            logger.info("Uplers Auth: ✅ Cookies valid — already logged in!")
-            return context, page
-
-        logger.info("Uplers Auth [Stage 2]: Opening VISIBLE browser — please log in...")
-        page.close()
-        context.close()
-
-        context = self._launch_context(playwright, headless=False)
-        page = context.new_page()
-        page.goto("https://platform.uplers.com", wait_until="domcontentloaded", timeout=30000)
-
-        logger.info(
-            "🔔 Uplers: Log in manually in the browser window (e.g., using Google Login). Timeout: %ds...",
-            CHALLENGE_TIMEOUT,
+        auth = SyncAuthHandler(
+            platform="uplers",
+            user_data_dir=UPLERS_USER_DATA,
+            login_url="https://platform.uplers.com",
+            check_fn=self._is_logged_in
         )
-        deadline = time.time() + CHALLENGE_TIMEOUT
-        last_log = 0
-        while time.time() < deadline:
-            now = int(time.time())
-            if now - last_log >= 10:
-                logger.info("Uplers Auth: ⏳ Waiting... %ds remaining", int(deadline - time.time()))
-                last_log = now
-            if self._is_logged_in(page):
-                break
-            page.wait_for_timeout(2000)
-        else:
-            logger.error("Uplers Auth: ❌ Login not completed within %ds. Aborting.", CHALLENGE_TIMEOUT)
-            page.close()
-            context.close()
-            return None, None
+        context, page = auth.authenticate(playwright, self._launch_context)
 
-        logger.info("Uplers Auth: ✅ Logged in! Cookies saved to %s", UPLERS_USER_DATA)
-        page.goto(UPLERS_JOBS_URL, wait_until="domcontentloaded", timeout=60000)
-        page.wait_for_timeout(3000)
-        self._handle_popups(page)
+        if context and page:
+            try:
+                page.goto(UPLERS_JOBS_URL, wait_until="domcontentloaded", timeout=60000)
+                page.wait_for_timeout(3000)
+                self._handle_popups(page)
+            except Exception as e:
+                logger.warning("Error navigating to jobs page: %s", e)
+
         return context, page
 
     def search(self, role: str, location: str = None, **kwargs) -> list[Job]:

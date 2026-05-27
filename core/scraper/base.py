@@ -55,6 +55,15 @@ class Job:
         }
 
 
+def group_jobs_by_company(jobs: list[dict]) -> dict[str, list[dict]]:
+    """Group a list of job dicts by company name."""
+    grouped: dict[str, list[dict]] = {}
+    for job in jobs:
+        company = job.get("company") or "Unknown"
+        grouped.setdefault(company, []).append(job)
+    return grouped
+
+
 class BaseJobScraper:
     def search(self, role: str, location: str, max_pages: int = 1, **kwargs) -> list[Job]:
         """Search for jobs by role and location."""

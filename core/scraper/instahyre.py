@@ -105,13 +105,7 @@ class InstahyreScraper(BaseJobScraper):
                             
                     break # Only 1 page for now until we implement pagination properly
 
-                if owned_browser:
-                    if 'browser_context' in locals():
-                        browser_context.close()
-                    elif browser:
-                        browser.close()
-                else:
-                    page.close()
+                page.close()
 
         except Exception as e:
             logger.error("Playwright Instahyre scrape failed: %s", e, exc_info=True)

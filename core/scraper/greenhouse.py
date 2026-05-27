@@ -48,12 +48,23 @@ class GreenhouseScraper(BaseJobScraper):
                         if location.lower() not in location_name.lower() and "remote" not in location_name.lower():
                             continue
 
+                    # List endpoint content field is usually empty; fetch detail for full description
+                    description = j.get("content", "")
+                    if not description:
+                        detail_url = f"https://boards-api.greenhouse.io/v1/boards/{company}/jobs/{j['id']}"
+                        try:
+                            dr = httpx.get(detail_url, timeout=10)
+                            if dr.status_code == 200:
+                                description = dr.json().get("content", "")
+                        except Exception as de:
+                            logger.debug("Greenhouse detail fetch failed for %s/%s: %s", company, j["id"], de)
+
                     job = Job(
                         id=f"greenhouse_{j['id']}",
                         title=j["title"],
                         company=company.replace("-", " ").title(),
                         location=location_name,
-                        description=j.get("content", ""),
+                        description=description,
                         skills_required=[],
                         platform="greenhouse",
                         application_url=j.get("absolute_url", ""),

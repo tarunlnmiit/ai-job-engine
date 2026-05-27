@@ -1,15 +1,14 @@
 import os
-import time
 import hashlib
 from datetime import datetime
 from .base import BaseJobScraper, Job
+from .auth_handler import SyncAuthHandler
 from logger import get_logger
 
 logger = get_logger("scraper.andela")
 
 ANDELA_USER_DATA = os.path.join(os.getcwd(), "andela_user_data")
 ANDELA_JOBS_URL = "https://talent.andela.com/jobs"
-CHALLENGE_TIMEOUT = 600
 
 
 class AndelaScraper(BaseJobScraper):
@@ -33,39 +32,21 @@ class AndelaScraper(BaseJobScraper):
 
     def _ensure_authenticated(self, playwright):
         """Return (context, page) with authenticated Andela session, or (None, None)."""
-        logger.info("Andela Auth [Stage 1]: Visible browser with saved cookies...")
-        context = self._launch_context(playwright, headless=False)
-        page = context.new_page()
-        page.goto(ANDELA_JOBS_URL, wait_until="domcontentloaded", timeout=60000)
-        page.wait_for_timeout(4000)
+        auth = SyncAuthHandler(
+            platform="andela",
+            user_data_dir=ANDELA_USER_DATA,
+            login_url="https://talent.andela.com",
+            check_fn=self._is_logged_in
+        )
+        context, page = auth.authenticate(playwright, self._launch_context)
 
-        if self._is_logged_in(page):
-            logger.info("Andela Auth: ✅ Cookies valid — already logged in!")
-            return context, page
+        if context and page:
+            try:
+                page.goto(ANDELA_JOBS_URL, wait_until="domcontentloaded", timeout=60000)
+                page.wait_for_timeout(3000)
+            except Exception as e:
+                logger.warning("Error navigating to jobs page: %s", e)
 
-        logger.info("Andela Auth [Stage 2]: Please log in at talent.andela.com...")
-        page.goto("https://talent.andela.com", wait_until="domcontentloaded", timeout=30000)
-
-        logger.info("🔔 Andela: Log in manually in browser window. Timeout: %ds...", CHALLENGE_TIMEOUT)
-        deadline = time.time() + CHALLENGE_TIMEOUT
-        last_log = 0
-        while time.time() < deadline:
-            now = int(time.time())
-            if now - last_log >= 10:
-                logger.info("Andela Auth: ⏳ Waiting... %ds remaining", int(deadline - time.time()))
-                last_log = now
-            if self._is_logged_in(page):
-                break
-            page.wait_for_timeout(2000)
-        else:
-            logger.error("Andela Auth: ❌ Login not completed within %ds. Aborting.", CHALLENGE_TIMEOUT)
-            page.close()
-            context.close()
-            return None, None
-
-        logger.info("Andela Auth: ✅ Logged in! Cookies saved to %s", ANDELA_USER_DATA)
-        page.goto(ANDELA_JOBS_URL, wait_until="domcontentloaded", timeout=60000)
-        page.wait_for_timeout(3000)
         return context, page
 
     def search(self, role: str, location: str = None, **kwargs) -> list[Job]:

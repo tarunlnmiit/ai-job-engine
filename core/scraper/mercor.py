@@ -1,28 +1,54 @@
 
+import os
 import hashlib
 from datetime import datetime
 from .base import BaseJobScraper, Job
+from .auth_handler import AsyncAuthHandler
 from logger import get_logger
 from .browser_utils import get_async_browser_context
 from playwright.async_api import async_playwright
 
 logger = get_logger("scraper.mercor")
 
+MERCOR_USER_DATA = os.path.join(os.getcwd(), "mercor_user_data")
+MERCOR_LOGIN_URL = "https://mercor.com/login"
+MERCOR_HOME_URL = "https://mercor.com"
+
 class MercorScraper(BaseJobScraper):
     """Scrape jobs from Mercor."""
+
+    @staticmethod
+    async def _is_logged_in(page) -> bool:
+        """Check if logged in by URL or DOM."""
+        url = page.url.lower()
+        if any(k in url for k in ("login", "signin", "auth", "logout")):
+            return False
+        return "mercor.com" in url
+
+    async def _launch_context(self, playwright, headless: bool):
+        """Launch browser context for Mercor."""
+        return await get_async_browser_context(playwright, headless=headless, user_data_dir=MERCOR_USER_DATA)
 
     async def search(self, role: str, location: str = None, **kwargs) -> list[Job]:
         """Search Mercor for jobs matching role."""
         logger.info("Mercor search: role='%s'", role)
         jobs = []
-        
+
         try:
             async with async_playwright() as p:
-                context = await get_async_browser_context(p, headless=True)
-                page = await context.new_page()
-                
+                auth = AsyncAuthHandler(
+                    platform="mercor",
+                    user_data_dir=MERCOR_USER_DATA,
+                    login_url=MERCOR_LOGIN_URL,
+                    check_fn=self._is_logged_in
+                )
+                context, page = await auth.authenticate(p, self._launch_context)
+                if not context or not page:
+                    logger.warning("Mercor: Authentication failed")
+                    return []
+
                 # Mercor landing
-                url = "https://mercor.com/"
+                url = MERCOR_HOME_URL
                 
                 logger.info("Navigating to %s", url)
                 await page.goto(url, wait_until="networkidle", timeout=60000)

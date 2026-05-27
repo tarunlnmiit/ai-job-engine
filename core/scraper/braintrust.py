@@ -1,29 +1,55 @@
 
+import os
 import hashlib
 from datetime import datetime
 from .base import BaseJobScraper, Job
+from .auth_handler import AsyncAuthHandler
 from logger import get_logger
 from .browser_utils import get_async_browser_context
 from playwright.async_api import async_playwright
 
 logger = get_logger("scraper.braintrust")
 
+BRAINTRUST_USER_DATA = os.path.join(os.getcwd(), "braintrust_user_data")
+BRAINTRUST_LOGIN_URL = "https://app.usebraintrust.com/login"
+BRAINTRUST_JOBS_URL = "https://app.usebraintrust.com/jobs"
+
 class BraintrustScraper(BaseJobScraper):
     """Scrape jobs from Braintrust."""
+
+    @staticmethod
+    async def _is_logged_in(page) -> bool:
+        """Check if logged in by URL or DOM."""
+        url = page.url.lower()
+        if any(k in url for k in ("login", "signin", "auth", "logout")):
+            return False
+        return "app.usebraintrust.com" in url and "/jobs" in url
+
+    async def _launch_context(self, playwright, headless: bool):
+        """Launch browser context for Braintrust."""
+        return await get_async_browser_context(playwright, headless=headless, user_data_dir=BRAINTRUST_USER_DATA)
 
     async def search(self, role: str, location: str = None, **kwargs) -> list[Job]:
         """Search Braintrust for jobs matching role."""
         logger.info("Braintrust search: role='%s' location='%s'", role, location)
         jobs = []
-        
+
         try:
             async with async_playwright() as p:
-                context = await get_async_browser_context(p, headless=True)
-                page = await context.new_page()
+                auth = AsyncAuthHandler(
+                    platform="braintrust",
+                    user_data_dir=BRAINTRUST_USER_DATA,
+                    login_url=BRAINTRUST_LOGIN_URL,
+                    check_fn=self._is_logged_in
+                )
+                context, page = await auth.authenticate(p, self._launch_context)
+                if not context or not page:
+                    logger.warning("Braintrust: Authentication failed")
+                    return []
                 
                 # Braintrust search URL - using app subdomain to avoid 404s
                 search_query = role.replace(" ", "%20")
-                url = f"https://app.usebraintrust.com/jobs?q={search_query}"
+                url = f"{BRAINTRUST_JOBS_URL}?q={search_query}"
                 
                 logger.info("Navigating to %s", url)
                 await page.goto(url, wait_until="networkidle", timeout=60000)

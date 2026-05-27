@@ -37,10 +37,15 @@ def get_browser_context(p, headless=True) -> BrowserContext:
         ignore_default_args=["--enable-automation"]
     )
 
-async def get_async_browser_context(p, headless=True) -> AsyncBrowserContext:
+async def get_async_browser_context(p, headless=True, user_data_dir=None) -> AsyncBrowserContext:
     """
     Returns a playwright async browser context.
     Attempts to connect to an existing Chrome instance on port 9222 first.
+
+    Args:
+        p: Playwright instance
+        headless: Whether to run headless
+        user_data_dir: Optional custom user data directory for persistent context
     """
     try:
         # Check if Chrome is running on port 9222
@@ -55,7 +60,9 @@ async def get_async_browser_context(p, headless=True) -> AsyncBrowserContext:
 
     # Fallback
     logger.info("Launching new persistent Chrome context (Async)...")
-    user_data_dir = os.path.join(os.getcwd(), "chrome_user_data")
+    if user_data_dir is None:
+        user_data_dir = os.path.join(os.getcwd(), "chrome_user_data")
+
     return await p.chromium.launch_persistent_context(
         user_data_dir,
         headless=headless,

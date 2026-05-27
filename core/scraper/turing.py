@@ -1,46 +1,56 @@
 import os
-import time
-import hashlib
+import tempfile
+import shutil
 from datetime import datetime
 from .base import BaseJobScraper, Job
 from logger import get_logger
 
 logger = get_logger("scraper.turing")
 
-TURING_USER_DATA = os.path.join(os.getcwd(), "turing_user_data")
 TURING_BASE_URL = "https://work.turing.com/jobs"
-CHALLENGE_TIMEOUT = 120
 
 
 class TuringScraper(BaseJobScraper):
     """Scrape jobs from work.turing.com (public job board, no auth required)."""
 
-    def _launch_context(self, playwright):
-        return playwright.chromium.launch_persistent_context(
-            TURING_USER_DATA,
-            headless=False,
-            args=["--start-maximized", "--disable-blink-features=AutomationControlled"],
+    def _launch_context(self, playwright, headless=True):
+        """Launch a fresh browser context with a temporary profile directory."""
+        temp_dir = tempfile.mkdtemp(prefix="turing_pw_")
+        logger.debug("Turing: Using temp browser profile: %s", temp_dir)
+
+        context = playwright.chromium.launch_persistent_context(
+            temp_dir,
+            headless=headless,
+            args=[
+                "--start-maximized",
+                "--disable-blink-features=AutomationControlled",
+            ],
             ignore_default_args=["--enable-automation"],
             viewport={"width": 1280, "height": 900},
         )
+        return context, temp_dir
 
     def search(self, role: str, location: str = None, **kwargs) -> list[Job]:
         logger.info("Turing search: role='%s'", role)
-        jobs = []
+        jobs: list[Job] = []
 
         try:
             from playwright.sync_api import sync_playwright
-        except ImportError:
-            logger.error("playwright not installed")
+            from bs4 import BeautifulSoup
+        except ImportError as e:
+            logger.error("Missing dependency: %s", e)
             return []
 
         search_url = f"{TURING_BASE_URL}?search={role.replace(' ', '+')}"
+        headless = kwargs.get("headless", True)
 
+        temp_dir = None
         try:
             with sync_playwright() as p:
-                context = self._launch_context(p)
+                context, temp_dir = self._launch_context(p, headless=headless)
                 page = context.new_page()
 
+                # Apply stealth if available
                 try:
                     from playwright_stealth import stealth_sync
                     stealth_sync(page)
@@ -50,189 +60,161 @@ class TuringScraper(BaseJobScraper):
                 logger.info("Turing: Navigating to %s", search_url)
                 page.goto(search_url, wait_until="domcontentloaded", timeout=60000)
 
+                # Wait for job cards to render
                 try:
-                    page.wait_for_load_state("networkidle", timeout=20000)
+                    page.wait_for_selector(
+                        "article[data-job-card-id]", timeout=20000
+                    )
                 except Exception:
-                    pass
-                page.wait_for_timeout(3000)
+                    logger.warning("Turing: Timeout waiting for job cards")
 
-                # Incapsula HARD block = specific error page (not just script references)
-                def is_hard_blocked():
-                    try:
-                        c = page.content()
-                        return "Request unsuccessful" in c and "Incapsula incident ID" in c
-                    except Exception:
-                        return False
+                # Scroll to load more results
+                for _ in range(3):
+                    page.mouse.wheel(0, 1000)
+                    page.wait_for_timeout(1000)
 
-                if is_hard_blocked():
-                    logger.error("Turing: Hard-blocked by Incapsula. Aborting.")
+                # Collect all job card IDs from the listing page
+                card_els = page.query_selector_all("article[data-job-card-id]")
+
+                if not card_els:
+                    logger.warning(
+                        "Turing: No job cards found. Trying fallback."
+                    )
+                    card_els = page.query_selector_all(
+                        ".group.relative.cursor-pointer"
+                    )
+
+                if not card_els:
+                    logger.info("Turing: No jobs found on page.")
                     page.close()
                     context.close()
                     return []
 
-                # Scroll to load more
-                for _ in range(5):
-                    page.mouse.wheel(0, 800)
-                    page.wait_for_timeout(800)
-                page.mouse.wheel(0, -9999)
-                page.wait_for_timeout(1000)
-
-                from bs4 import BeautifulSoup
+                # Pre-collect card metadata from listing page using BS4
                 content = page.content()
-
-                debug_path = os.path.join(os.getcwd(), "turing_debug.html")
-                with open(debug_path, "w", encoding="utf-8") as f:
-                    f.write(content)
-                logger.info("Turing: HTML dumped → %s", debug_path)
-
                 soup = BeautifulSoup(content, "html.parser")
+                card_soups = soup.select("article[data-job-card-id]")
 
-                all_classes: set[str] = set()
-                for el in soup.find_all(class_=True):
-                    all_classes.update(el.get("class", []))
-                job_classes = sorted(
-                    c for c in all_classes
-                    if any(k in c.lower() for k in ("job", "card", "role", "position", "listing", "opportun"))
-                )
-                logger.info("Turing: Job-related classes: %s", job_classes[:40])
+                card_data = []
+                for cs in card_soups:
+                    job_id = cs.get("data-job-card-id")
+                    if not job_id:
+                        continue
+                    title_el = cs.select_one("h3")
+                    title = title_el.get_text(strip=True) if title_el else "Unknown Role"
+                    snippet_el = cs.select_one("p")
+                    snippet = snippet_el.get_text(strip=True) if snippet_el else ""
+                    salary = None
+                    card_text = cs.get_text()
+                    if "$" in card_text:
+                        badge = cs.find(string=lambda t: t and "$" in t)
+                        if badge:
+                            salary = badge.strip()
+                    card_data.append({
+                        "job_id": job_id,
+                        "title": title,
+                        "snippet": snippet,
+                        "salary": salary,
+                    })
 
-                cards = (
-                    soup.select("[class*='job-card']")
-                    or soup.select("[class*='JobCard']")
-                    or soup.select("[class*='job_card']")
-                    or soup.select("[class*='job-listing']")
-                    or soup.select("[class*='JobListing']")
-                    or soup.select("[class*='role-card']")
-                    or soup.select("[class*='RoleCard']")
-                    or soup.select("[class*='position-card']")
-                    or soup.select("[class*='opportunity']")
-                    # Grid of cards — target clickable card wrappers
-                    or soup.select("a[href*='/jobs/']")
-                    or soup.select("div[class*='card']")
-                )
+                logger.info("Turing: Found %d job cards", len(card_data))
 
-                if not cards:
-                    logger.warning("Turing: No cards — extracting /jobs/ links")
-                    seen_urls: set[str] = set()
-                    for a in soup.find_all("a", href=True):
-                        href = a["href"]
-                        if "/jobs/" not in href:
-                            continue
-                        full_url = href if href.startswith("http") else f"https://work.turing.com{href}"
-                        if full_url in seen_urls:
-                            continue
-                        seen_urls.add(full_url)
-                        title = a.get_text(strip=True)
-                        if not title or len(title) < 3:
-                            continue
-                        job_id = hashlib.md5(full_url.encode()).hexdigest()[:10]
-                        job = Job(
-                            id=f"turing_{job_id}",
-                            title=title,
-                            company="Turing",
-                            location="Remote",
-                            description=f"Remote contractual role at Turing. Role: {title}",
-                            platform="turing",
-                            application_url=full_url,
-                            is_remote=True,
-                            date_found=datetime.now().strftime("%Y-%m-%d"),
-                        )
-                        jobs.append(job)
-                else:
-                    logger.info("Turing: Found %d job cards", len(cards))
-                    seen_urls: set[str] = set()
-                    count = 0
-                    for card in cards:
-                        if count >= 20: break # Limit for performance
-                        try:
-                            href = ""
-                            for a in card.find_all("a", href=True):
-                                href = a["href"]
-                                break
-                            if not href:
-                                href = card.get("href", "")
-                            full_url = href if href.startswith("http") else f"https://work.turing.com{href}" if href else ""
-                            if not full_url or full_url in seen_urls:
-                                continue
-                            seen_urls.add(full_url)
+                count = 0
+                for cd in card_data:
+                    if count >= 20:
+                        break
+                    job_id = cd["job_id"]
+                    title = cd["title"]
+                    snippet = cd["snippet"]
+                    salary = cd["salary"]
+                    full_url = f"{TURING_BASE_URL}?jobId={job_id}"
+                    description = snippet
 
-                            title_el = card.select_one("h1, h2, h3, h4") or card.select_one("[class*='title'], [class*='Title']")
-                            title = title_el.get_text(strip=True) if title_el else card.get_text(strip=True)[:80]
-                            if not title or len(title) < 3:
-                                continue
+                    logger.info("Turing: Fetching details for '%s'", title)
 
-                            loc_el = card.select_one("[class*='location'], [class*='Location']")
-                            loc_text = loc_el.get_text(strip=True) if loc_el else "Remote"
+                    try:
+                        # Click the specific card to open the detail side panel
+                        card_selector = f'article[data-job-card-id="{job_id}"]'
 
-                            sal_el = (
-                                card.select_one("[class*='salary']")
-                                or card.select_one("[class*='Salary']")
-                                or card.select_one("[class*='rate']")
-                                or card.select_one("[class*='Rate']")
-                                or card.select_one("[class*='badge']")
-                                or card.select_one("[class*='price']")
-                            )
-                            salary = sal_el.get_text(strip=True) if sal_el else None
+                        # Ensure we're on the listing page
+                        if "jobId=" in page.url and f"jobId={job_id}" not in page.url:
+                            page.goto(search_url, wait_until="domcontentloaded", timeout=30000)
+                            page.wait_for_selector(card_selector, timeout=10000)
 
-                            # Deep scrape description
-                            logger.info("Turing: Fetching details for %s", full_url)
-                            description = ""
+                        card_handle = page.query_selector(card_selector)
+                        if card_handle:
+                            card_handle.click()
+                            page.wait_for_timeout(1500)
+
+                            # Wait for the "Job Description" heading in the panel
                             try:
-                                # Re-use page to avoid opening too many windows
-                                page.goto(full_url, wait_until="domcontentloaded", timeout=30000)
-                                page.wait_for_timeout(2000)
-                                detail_soup = BeautifulSoup(page.content(), "html.parser")
-                                
-                                # Turing description usually in a specific div
-                                desc_panel = (
-                                    detail_soup.select_one("[class*='description']")
-                                    or detail_soup.select_one("[class*='Description']")
-                                    or detail_soup.select_one("[class*='content']")
-                                    or detail_soup.select_one("main")
+                                page.wait_for_selector(
+                                    'h3:text("Job Description")',
+                                    timeout=5000,
                                 )
-                                if desc_panel:
-                                    description = desc_panel.get_text("\n", strip=True)
-                            except Exception as e:
-                                logger.warning("Turing: Could not fetch details for %s: %s", full_url, e)
+                            except Exception:
+                                pass
 
-                            if not description:
-                                # Fallback to card text
-                                desc_el = card.select_one("[class*='description'], [class*='Description'], [class*='summary']")
-                                description = desc_el.get_text("\n", strip=True) if desc_el else f"Remote contractual role at Turing. Role: {title}"
-
-                            job_id = hashlib.md5((full_url or title).encode()).hexdigest()[:10]
-                            job = Job(
-                                id=f"turing_{job_id}",
-                                title=title,
-                                company="Turing",
-                                location=loc_text,
-                                description=description[:5000],
-                                salary=salary,
-                                platform="turing",
-                                application_url=full_url or search_url,
-                                is_remote=True,
-                                date_found=datetime.now().strftime("%Y-%m-%d"),
+                            detail_soup = BeautifulSoup(
+                                page.content(), "html.parser"
                             )
-                            jobs.append(job)
-                            count += 1
-                            logger.debug("Turing: Scraped '%s'", title)
-                            
-                            # Navigate back to results for next card if we were reusing page
-                            # Wait, we are in a loop over 'cards' which were from the initial 'page.content()'
-                            # So we can just continue to next card's full_url
-                            # BUT we need to be careful if the search results page needs to be restored.
-                            # Actually, it's better to just go to each URL and then go back or use new pages.
-                            # Since we already have the 'cards' list from the initial soup, we are fine.
 
-                        except Exception as e:
-                            logger.error("Turing: Error on card: %s", e)
-                            continue
+                            # Find "Job Description" h3 → next sibling div
+                            desc_header = detail_soup.find(
+                                lambda tag: tag.name == "h3"
+                                and "Job Description" in (tag.text or "")
+                            )
+                            if desc_header:
+                                desc_panel = desc_header.find_next("div")
+                                if desc_panel:
+                                    description = desc_panel.get_text(
+                                        "\n", strip=True
+                                    )
+                            else:
+                                # Fallback: look for any large text block
+                                # in the right-side panel
+                                panels = detail_soup.select(
+                                    "aside, [class*='detail'], [class*='panel']"
+                                )
+                                for panel in panels:
+                                    text = panel.get_text("\n", strip=True)
+                                    if len(text) > 200:
+                                        description = text
+                                        break
+                    except Exception as e:
+                        logger.warning(
+                            "Turing: Could not fetch details for '%s': %s",
+                            title, e,
+                        )
+
+                    job = Job(
+                        id=f"turing_{job_id}",
+                        title=title,
+                        company="Turing",
+                        location="Remote",
+                        description=description[:5000],
+                        salary=salary,
+                        platform="turing",
+                        application_url=full_url,
+                        is_remote=True,
+                        date_found=datetime.now().strftime("%Y-%m-%d"),
+                    )
+                    jobs.append(job)
+                    count += 1
+                    logger.debug("Turing: Scraped '%s'", title)
 
                 page.close()
                 context.close()
 
         except Exception as e:
             logger.error("Turing scraper fatal error: %s", e)
+        finally:
+            # Clean up temp browser profile
+            if temp_dir and os.path.exists(temp_dir):
+                try:
+                    shutil.rmtree(temp_dir)
+                except Exception:
+                    pass
 
         logger.info("Turing scrape complete — %d jobs found", len(jobs))
         return jobs

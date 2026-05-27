@@ -109,7 +109,7 @@ class WorkInLuxembourgScraper(BaseJobScraper):
                                 detail_page.close()
                             except Exception as desc_e:
                                 logger.warning("Could not fetch detail for %s: %s", href, desc_e)
-                                description = "Source: Work in Luxembourg (ADEM Official Portal)"
+                                description = f"Source: Work in Luxembourg (ADEM Official Portal) — {title}"
 
                             job = Job(
                                 id=job_id,
