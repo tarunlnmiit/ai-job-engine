@@ -1,18 +1,44 @@
 ai:
-  score_threshold: 35
-apply:
-  auto_apply_platforms: []
-jobs_found: 100
-last_search: '2026-05-02T08:56:26.405765'
+  score_threshold: 80
 portals:
-- wellfound
+- linkedin
+- naukri
+- indeed_india
+- remotive
+- weworkremotely
+- instahyre
+- hacker_news
+- hirist
 search:
   experience_years: 10
   locations:
   - Remote
-  max_pages: 1
+  max_pages: 3
   remote_ok: true
   roles:
   - Data Scientist
   - AI Engineer
+  - Machine Learning Engineer
+  - Senior Data Scientist
+  - Principal Data Scientist
+  - Staff Data Scientist
+  - ML Engineer
+  - Applied Scientist
+  - Data Science Lead
+  - Quantitative Analyst
+  - Senior AI Engineer
+  - Staff AI Engineer
+  - Principal AI Engineer
+  - Senior Machine Learning Engineer
+  - ML Infrastructure Engineer
+  - Applied AI Engineer
+  - AI/ML Engineer
+  - Deep Learning Engineer
+  - Senior Machine Learning Engineer
+  - Staff Machine Learning Engineer
+  - ML Engineer
+  - AI/ML Engineer
+  - Applied Scientist
+  - Deep Learning Engineer
+  - MLOps Engineer
   salary_min_inr: 450000
