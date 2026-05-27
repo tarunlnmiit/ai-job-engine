@@ -23,54 +23,70 @@ class CSVTracker:
         self.filepath = filepath
         os.makedirs(os.path.dirname(filepath) or ".", exist_ok=True)
 
+    # Maps incoming job dict keys → CSV column names
+    _KEY_TO_COL = {
+        "date_found": "Date Found",
+        "date_applied": "Date Applied",
+        "platform": "Platform",
+        "company": "Company",
+        "title": "Role",
+        "location": "Location",
+        "is_remote": "Remote",
+        "salary": "Salary",
+        "description": "Description",
+        "score": "Score (%)",
+        "matching_skills": "Matching Skills",
+        "missing_skills": "Missing Skills",
+        "status": "Status",
+        "application_url": "Application URL",
+        "contact_person": "Contact Person",
+        "contact_email": "Contact Email",
+        "linkedin_network_match": "LinkedIn Network Match",
+        "notes": "Notes",
+        "insert_ts": "Insert TS",
+        "applied_ts": "Applied TS",
+    }
+
+    def _coerce(self, key: str, val) -> str:
+        if isinstance(val, list):
+            return ", ".join(str(v) for v in val)
+        if key == "is_remote":
+            return "Yes" if val else "No"
+        return str(val) if val is not None else ""
+
     def update_job(self, job: dict) -> bool:
-        """Add or update job in CSV tracker."""
+        """Add or update job in CSV tracker.
+
+        For existing rows only updates the columns explicitly present in *job*,
+        preserving all other field values. For new rows inserts a full row with
+        empty defaults for any missing fields.
+        """
         try:
-            # Load or create DataFrame
             if os.path.exists(self.filepath):
                 df = pd.read_csv(self.filepath, dtype=str)
             else:
                 df = pd.DataFrame(columns=COLUMNS)
 
-            # Check if job exists by ID
             job_id = str(job.get("id"))
-            
-            # Convert Job ID column to string for consistent comparison
             if not df.empty:
                 df["Job ID"] = df["Job ID"].astype(str)
 
-            # Prepare row data
-            row_data = {
-                "Job ID": str(job_id),
-                "Date Found": str(job.get("date_found", "")),
-                "Date Applied": str(job.get("date_applied", "")),
-                "Platform": str(job.get("platform", "")),
-                "Company": str(job.get("company", "")),
-                "Role": str(job.get("title", "")),
-                "Location": str(job.get("location", "")),
-                "Remote": "Yes" if job.get("is_remote") else "No",
-                "Salary": str(job.get("salary", "N/A")),
-                "Description": str(job.get("description", "")),
-                "Score (%)": str(job.get("score", "")),
-                "Matching Skills": ", ".join(job.get("matching_skills", [])) if isinstance(job.get("matching_skills"), list) else str(job.get("matching_skills", "")),
-                "Missing Skills": ", ".join(job.get("missing_skills", [])) if isinstance(job.get("missing_skills"), list) else str(job.get("missing_skills", "")),
-                "Status": str(job.get("status", "new")),
-                "Application URL": str(job.get("application_url", "")),
-                "Contact Person": str(job.get("contact_person", "")),
-                "Contact Email": str(job.get("contact_email", "")),
-                "LinkedIn Network Match": str(job.get("linkedin_network_match", "")),
-                "Notes": str(job.get("notes", "")),
-                "Insert TS": str(job.get("insert_ts", "")),
-                "Applied TS": str(job.get("applied_ts", "")),
-            }
-
             if not df.empty and job_id in df["Job ID"].values:
-                # Update existing row
+                # Patch-only update: only touch columns present in the incoming dict
                 idx = df[df["Job ID"] == job_id].index[0]
-                for col, val in row_data.items():
-                    df.at[idx, col] = val
+                for key, col in self._KEY_TO_COL.items():
+                    if key in job:
+                        df.at[idx, col] = self._coerce(key, job[key])
             else:
-                # Append new row
+                # Full insert with defaults for missing fields
+                row_data = {"Job ID": job_id}
+                for key, col in self._KEY_TO_COL.items():
+                    row_data[col] = self._coerce(key, job.get(key, ""))
+                # Fallbacks for fields that aren't in _KEY_TO_COL
+                if "salary" not in job:
+                    row_data["Salary"] = "N/A"
+                if "status" not in job:
+                    row_data["Status"] = "new"
                 df = pd.concat([df, pd.DataFrame([row_data])], ignore_index=True)
 
             df.to_csv(self.filepath, index=False)

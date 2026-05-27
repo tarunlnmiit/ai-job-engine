@@ -60,6 +60,9 @@ class JobCache:
         if "applied_ts" not in columns:
             logger.info("Migrating DB: Adding applied_ts column")
             c.execute("ALTER TABLE jobs ADD COLUMN applied_ts TEXT")
+        if "desc_fetch_error" not in columns:
+            logger.info("Migrating DB: Adding desc_fetch_error column")
+            c.execute("ALTER TABLE jobs ADD COLUMN desc_fetch_error TEXT")
 
         conn.commit()
         conn.close()
@@ -147,6 +150,22 @@ class JobCache:
             logger.error("Error retrieving jobs: %s", e)
             return []
 
+    def get_unique_platforms(self) -> List[str]:
+        """Retrieve a list of unique platforms from the jobs database."""
+        logger.debug("get_unique_platforms")
+        try:
+            conn = sqlite3.connect(self.db_path)
+            c = conn.cursor()
+            c.execute("SELECT DISTINCT platform FROM jobs WHERE platform IS NOT NULL AND platform != ''")
+            rows = c.fetchall()
+            conn.close()
+            platforms = sorted([row[0] for row in rows])
+            logger.debug("get_unique_platforms: found %d platforms", len(platforms))
+            return platforms
+        except Exception as e:
+            logger.error("Error retrieving unique platforms: %s", e)
+            return []
+
     def delete_jobs_by_platform(self, platform: str) -> bool:
         """Delete all jobs for a specific platform from cache."""
         logger.info("Deleting all jobs for platform: %s", platform)
@@ -181,6 +200,82 @@ class JobCache:
         except Exception as e:
             logger.error("Error deleting jobs by IDs: %s", e)
             return False
+
+    def get_jobs_without_description(
+        self,
+        include_perm_failed: bool = False,
+        include_no_desc: bool = False,
+    ) -> List[dict]:
+        """Jobs with missing or very short descriptions."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            c = conn.cursor()
+            base = "SELECT * FROM jobs WHERE (description IS NULL OR TRIM(description) = '' OR LENGTH(description) < 100)"
+            excluded = []
+            if not include_perm_failed:
+                excluded.append("perm_failed")
+            if not include_no_desc:
+                excluded.append("no_desc")
+            if excluded:
+                placeholders = ",".join("?" * len(excluded))
+                base += f" AND (desc_fetch_error IS NULL OR desc_fetch_error NOT IN ({placeholders}))"
+                c.execute(base, excluded)
+            else:
+                c.execute(base)
+            rows = c.fetchall()
+            conn.close()
+            return [self._row_to_dict(row) for row in rows]
+        except Exception as e:
+            logger.error("Error retrieving jobs without description: %s", e)
+            return []
+
+    def mark_desc_fetch_error(self, job_id: str, error: str) -> bool:
+        """Persist a permanent fetch error so the job is skipped on future runs."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            c = conn.cursor()
+            c.execute("UPDATE jobs SET desc_fetch_error = ? WHERE id = ?", (error, job_id))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            logger.error("Error marking fetch error for job %s: %s", job_id, e)
+            return False
+
+    def clear_desc_fetch_error(self, job_id: str) -> bool:
+        """Clear a persisted fetch error to allow retrying."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            c = conn.cursor()
+            c.execute("UPDATE jobs SET desc_fetch_error = NULL WHERE id = ?", (job_id,))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            logger.error("Error clearing fetch error for job %s: %s", job_id, e)
+            return False
+
+    def update_description(self, job_id: str, description: str) -> bool:
+        """Update description for a single job."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            c = conn.cursor()
+            c.execute("UPDATE jobs SET description = ? WHERE id = ?", (description, job_id))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            logger.error("Error updating description for job %s: %s", job_id, e)
+            return False
+
+    def get_jobs_grouped_by_company(self, status: Optional[str] = None) -> dict[str, list[dict]]:
+        """Return jobs from DB grouped by company name."""
+        jobs = self.get_all_jobs(status=status)
+        grouped: dict[str, list[dict]] = {}
+        for job in jobs:
+            company = job.get("company") or "Unknown"
+            grouped.setdefault(company, []).append(job)
+        return grouped
 
     def clear_all(self) -> bool:
         """Delete all jobs from cache."""
@@ -223,4 +318,5 @@ class JobCache:
             "linkedin_network_match": row[19],
             "insert_ts": row[20] if len(row) > 20 else None,
             "applied_ts": row[21] if len(row) > 21 else None,
+            "desc_fetch_error": row[22] if len(row) > 22 else None,
         }
