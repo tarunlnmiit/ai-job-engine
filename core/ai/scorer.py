@@ -1,39 +1,21 @@
 import os
 import json
 import time
-import threading
 from typing import Optional
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dotenv import load_dotenv
 
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "..", "..", ".env"), override=True)
 
 from logger import get_logger
+from core.scorer.claude_subprocess_scorer import score_batch_claude_subprocess as _claude_score_batch
+
 logger = get_logger("ai.scorer")
 
-try:
-    from core.ai.client_manager import get_groq_client
-    GROQ_AVAILABLE = False
-except ImportError:
-    GROQ_AVAILABLE = False
-
-try:
-    from core.ai.client_manager import get_nim_client
-    NIM_AVAILABLE = True
-except ImportError:
-    NIM_AVAILABLE = False
-
-try:
-    import ollama
-    OLLAMA_AVAILABLE = False
-except ImportError:
-    OLLAMA_AVAILABLE = False
-
-try:
-    import anthropic
-    ANTHROPIC_AVAILABLE = True
-except ImportError:
-    ANTHROPIC_AVAILABLE = False
+# All alternative scorers dormant — Claude CLI subprocess is primary
+GROQ_AVAILABLE = False
+NIM_AVAILABLE = False
+OLLAMA_AVAILABLE = False
+ANTHROPIC_AVAILABLE = False
 
 SCORE_PROMPT = """
 YOU RECRUITER. YOU ATS. 
@@ -306,22 +288,13 @@ def score_job_ollama_best(resume_text: str, job_description: str) -> Optional[di
         return None
 
 
-def score_job(resume_text: str, job_description: str, retries: int = 1) -> Optional[dict]:
-    """Score job against resume. Try Gemini first (once), then the best Ollama fallback."""
-    global _GROQ_EXHAUSTED
-    logger.debug("score_job called — resume length: %d chars", len(resume_text))
-    
-    # 1. Try Groq (Fail Fast) - Only if not already exhausted
-    if not _GROQ_EXHAUSTED:
-        result = score_job_groq(resume_text, job_description, retries)
-        if result:
-            return result
-    else:
-        logger.debug("Skipping Groq as it is already marked as exhausted/rate-limited")
-
-    # 2. Best Ollama Fallback
-    logger.info("Attempting best Ollama fallback")
-    return score_job_ollama_best(resume_text, job_description)
+def score_job(resume_text: str, job_description: str, retries: int = 2) -> Optional[dict]:
+    """Score single job via Claude Code CLI subprocess."""
+    actual_resume = PRE_PARSED_SKILLS if PRE_PARSED_SKILLS else resume_text
+    results, _ = _claude_score_batch(actual_resume, [{"id": "_single_", "description": job_description}])
+    if results:
+        return results[0]
+    return None
 
 
 def score_batch_groq(resume_text: str, jobs: list[dict], retries: int = 3) -> list[dict]:
@@ -387,7 +360,7 @@ def score_batch_nim(resume_text: str, jobs: list[dict]) -> list[dict]:
         logger.warning("NVIDIA_API_KEY not set — skipping NIM scoring")
         return []
 
-    model_name = os.getenv("NIM_MODEL", "z-ai/glm4.7")
+    model_name = os.getenv("NIM_MODEL", "minimaxai/minimax-m2.7")
     actual_resume_data = PRE_PARSED_SKILLS if PRE_PARSED_SKILLS else resume_text
     jobs_to_send = [
         {"id": j.get("id"), "description": j.get("description", "")[:2000]}
@@ -417,7 +390,7 @@ def score_batch_nim(resume_text: str, jobs: list[dict]) -> list[dict]:
                 if not getattr(chunk, "choices", None) or not chunk.choices:
                     continue
                 delta = chunk.choices[0].delta
-                # skip reasoning_content from thinking models (e.g. glm4.7, kimi-k2)
+                # skip reasoning_content from thinking models (e.g. minimax-m2.7, kimi-k2)
                 content = getattr(delta, "content", None)
                 if content:
                     full_content.append(content)
@@ -715,111 +688,27 @@ def score_batch_openrouter(resume_text: str, jobs: list[dict]) -> list[dict]:
 
 
 def score_batch(resume_text: str, jobs: list[dict], batch_size: int = 50, max_workers: int = 1, on_chunk_complete=None) -> list[dict]:
-    """Score jobs via NIM + OpenRouter in parallel, Ollama fallback for unscored."""
+    """Score jobs via Claude Code CLI subprocess. All other scorers dormant."""
+    actual_resume = PRE_PARSED_SKILLS if PRE_PARSED_SKILLS else resume_text
     scored_jobs_map: dict = {}
-    scored_by: dict = {}  # job_id → "NIM" | "OpenRouter" | "Ollama"
-    map_lock = threading.Lock()
-    best_ollama = benchmark_ollama_models()
 
-    nim_batch_size = int(os.getenv("NIM_BATCH_SIZE", "5"))
-    chunks = [jobs[i:i + nim_batch_size] for i in range(0, len(jobs), nim_batch_size)]
-    logger.info("═══ Scoring %d jobs | %d chunks of %d | NIM + OpenRouter parallel ═══", len(jobs), len(chunks), nim_batch_size)
+    chunks = [jobs[i:i + batch_size] for i in range(0, len(jobs), batch_size)]
+    logger.info("═══ Scoring %d jobs | %d chunks of %d | Claude CLI ═══", len(jobs), len(chunks), batch_size)
 
-    def _process_nim(chunk, idx):
-        chunk_ids = [j.get("id") for j in chunk]
-        try:
-            results = score_batch_nim(resume_text, chunk)
-            if not results:
-                logger.warning("NIM chunk %d/%d → 0 results (empty/failed)", idx + 1, len(chunks))
-                return
-            with map_lock:
-                newly_scored = []
-                for res in results:
-                    jid = str(res.get("id")).strip() if res.get("id") is not None else None
-                    if jid:
-                        score = int(float(res.get("score", 0)))
-                        # Allow overwrite if current score is 0 or not present
-                        if jid not in scored_jobs_map or (scored_jobs_map[jid].get("score", 0) == 0 and score > 0):
-                            scored_jobs_map[jid] = res
-                            scored_by[jid] = "NIM"
-                            newly_scored.append(res)
-            logger.info("NIM chunk %d/%d → %d/%d jobs newly scored", idx + 1, len(chunks), len(newly_scored), len(chunk))
-            if on_chunk_complete and newly_scored:
-                on_chunk_complete(newly_scored, scorer="NIM")
-        except Exception as e:
-            logger.error("NIM chunk %d/%d crashed: %s | jobs: %s", idx + 1, len(chunks), e, chunk_ids)
-
-    def _process_openrouter(chunk, idx):
-        chunk_ids = [j.get("id") for j in chunk]
-        try:
-            results = score_batch_openrouter(resume_text, chunk)
-            if not results:
-                logger.warning("OpenRouter chunk %d/%d → 0 results (empty/failed)", idx + 1, len(chunks))
-                return
-            with map_lock:
-                newly_scored = []
-                already_count = 0
-                for res in results:
-                    jid = str(res.get("id")).strip() if res.get("id") is not None else None
-                    if jid:
-                        score = int(float(res.get("score", 0)))
-                        # Allow overwrite if current score is 0 or not present
-                        if jid not in scored_jobs_map or (scored_jobs_map[jid].get("score", 0) == 0 and score > 0):
-                            scored_jobs_map[jid] = res
-                            scored_by[jid] = "OpenRouter"
-                            newly_scored.append(res)
-                        elif jid in scored_jobs_map:
-                            already_count += 1
-            logger.info("OpenRouter chunk %d/%d → %d newly scored, %d already by NIM", idx + 1, len(chunks), len(newly_scored), already_count)
-            if on_chunk_complete and newly_scored:
-                on_chunk_complete(newly_scored, scorer="OpenRouter")
-        except Exception as e:
-            logger.error("OpenRouter chunk %d/%d crashed: %s | jobs: %s", idx + 1, len(chunks), e, chunk_ids)
-
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        futures = []
-        if len(jobs) <= nim_batch_size:
-            # Single batch case: Only use OpenRouter to save NIM credits/parallel overhead
-            for idx, chunk in enumerate(chunks):
-                futures.append(executor.submit(_process_openrouter, chunk, idx))
-        else:
-            # Multi-batch case: Distribute chunks among providers (no overlapping jobs)
-            for idx, chunk in enumerate(chunks):
-                if idx % 2 == 0:
-                    futures.append(executor.submit(_process_nim, chunk, idx))
-                else:
-                    futures.append(executor.submit(_process_openrouter, chunk, idx))
-        for f in as_completed(futures):
-            try:
-                f.result()
-            except Exception as e:
-                logger.error("Unexpected future exception: %s", e)
-
-    # Tally after parallel phase
-    nim_count = sum(1 for v in scored_by.values() if v == "NIM")
-    or_count = sum(1 for v in scored_by.values() if v == "OpenRouter")
-    unscored_jobs = [j for j in jobs if j.get("id") not in scored_jobs_map]
-    logger.info("─── Parallel phase done | NIM: %d | OpenRouter: %d | Unscored: %d ───", nim_count, or_count, len(unscored_jobs))
-
-    # Ollama fallback for any jobs neither NIM nor OpenRouter scored
-    if unscored_jobs and best_ollama:
-        logger.info("Fallback: %d unscored jobs → Ollama (%s)", len(unscored_jobs), best_ollama)
-        ollama_count = 0
-        for i in range(0, len(unscored_jobs), 5):
-            chunk = unscored_jobs[i:i + 5]
-            results = score_batch_ollama(resume_text, chunk, best_ollama)
-            if results:
-                for res in results:
-                    jid = str(res.get("id")).strip() if res.get("id") is not None else None
-                    scored_jobs_map[jid] = res
-                    scored_by[jid] = "Ollama"
-                    ollama_count += 1
-                if on_chunk_complete:
-                    on_chunk_complete(results, scorer="Ollama")
-        still_unscored = [j for j in jobs if j.get("id") not in scored_jobs_map]
-        logger.info("Ollama scored %d | still unscored: %d", ollama_count, len(still_unscored))
-    elif unscored_jobs:
-        logger.warning("%d jobs remain unscored — NIM + OpenRouter failed, no Ollama available.", len(unscored_jobs))
+    for idx, chunk in enumerate(chunks):
+        results, retry_time = _claude_score_batch(actual_resume, chunk)
+        if retry_time:
+            logger.warning("Claude usage limit — retry after %s. Stopping early.", retry_time)
+            break
+        newly_scored = []
+        for res in results:
+            jid = str(res.get("id", "")).strip()
+            if jid:
+                scored_jobs_map[jid] = res
+                newly_scored.append(res)
+        logger.info("Chunk %d/%d → %d/%d scored", idx + 1, len(chunks), len(newly_scored), len(chunk))
+        if on_chunk_complete and newly_scored:
+            on_chunk_complete(newly_scored, scorer="ClaudeCLI")
 
     final_jobs = []
     for job in jobs:
@@ -832,7 +721,5 @@ def score_batch(resume_text: str, jobs: list[dict], batch_size: int = 50, max_wo
         final_jobs.append(job)
 
     total_scored = sum(1 for j in final_jobs if j.get("score", 0) > 0)
-    logger.info("═══ Final tally: %d/%d jobs scored (NIM:%d OR:%d Ollama:%d) ═══",
-                total_scored, len(jobs), nim_count, or_count,
-                sum(1 for v in scored_by.values() if v == "Ollama"))
+    logger.info("═══ Final: %d/%d scored via Claude CLI ═══", total_scored, len(jobs))
     return final_jobs

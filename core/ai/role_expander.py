@@ -1,6 +1,8 @@
 import os
 import json
 import time
+import subprocess
+import re
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -44,6 +46,69 @@ Return ONLY a valid JSON object with a "titles" key containing an array of strin
 }}
 
 Include 5-10 titles. Include the original role. Keep titles concise and job-board-friendly."""
+
+
+def expand_roles_claude_subprocess(role: str, experience: int) -> list[str] | None:
+    """Expand roles via Claude CLI subprocess (claude -p)."""
+    try:
+        subprocess.run(["claude", "--version"], capture_output=True, check=True, timeout=5)
+    except Exception:
+        logger.debug("Claude CLI not available — skipping")
+        return None
+
+    prompt = EXPAND_PROMPT.format(role=role, experience=experience)
+    logger.info("Calling Claude CLI subprocess for role='%s' exp=%d", role, experience)
+    t0 = time.time()
+
+    try:
+        result = subprocess.run(
+            ["claude", "-p", prompt, "--output-format", "text"],
+            capture_output=True, text=True, timeout=60
+        )
+        elapsed = time.time() - t0
+
+        if result.returncode != 0:
+            stderr = result.stderr.strip()
+            # Check for usage limit
+            limit_match = re.search(
+                r"Claude AI usage limit reached, please try again after (\d{1,2}:\d{2}[ap]m)",
+                stderr, re.IGNORECASE
+            )
+            if limit_match:
+                logger.warning("Claude CLI usage limit hit — skipping")
+            else:
+                logger.error("Claude CLI failed (rc=%d): %s", result.returncode, stderr[:200])
+            return None
+
+        text = result.stdout.strip()
+        logger.debug("Claude CLI responded in %.2fs — raw: %s", elapsed, text[:200])
+
+        # Strip markdown fences if present
+        if text.startswith("```"):
+            text = text.split("```")[1]
+            if text.startswith("json"):
+                text = text[4:]
+
+        data = json.loads(text)
+        if isinstance(data, dict) and "titles" in data:
+            titles = data["titles"]
+        elif isinstance(data, list):
+            titles = data
+        else:
+            titles = [role]
+
+        logger.info("Claude CLI expanded to %d titles: %s", len(titles), titles)
+        return titles
+
+    except subprocess.TimeoutExpired:
+        logger.error("Claude CLI timed out for role='%s'", role)
+        return None
+    except json.JSONDecodeError as e:
+        logger.error("Claude CLI JSON parse failed: %s — raw: %s", e, text[:300])
+        return None
+    except Exception as e:
+        logger.error("Claude CLI role expansion error: %s", e)
+        return None
 
 
 def expand_roles_gemini(role: str, experience: int) -> list[str] | None:
@@ -190,28 +255,20 @@ def expand_roles_groq(role: str, experience: int) -> list[str] | None:
 
 
 def expand_roles(role: str, experience: int) -> list[str]:
-    """Return similar job titles for role + experience. Gemini → Groq → Ollama fallback."""
+    """Return similar job titles for role + experience. Tries Claude CLI → Groq → Gemini → Ollama."""
     logger.info("expand_roles called: role='%s' experience=%d", role, experience)
 
-    # 1. Try Gemini
-    titles = expand_roles_gemini(role, experience)
-    if titles:
-        logger.info("Using Gemini result — %d titles", len(titles))
-        return titles
+    for provider, fn in [
+        ("Claude CLI", lambda: expand_roles_claude_subprocess(role, experience)),
+        ("Groq", lambda: expand_roles_groq(role, experience)),
+        ("Gemini", lambda: expand_roles_gemini(role, experience)),
+        ("Ollama", lambda: expand_roles_ollama(role, experience)),
+    ]:
+        titles = fn()
+        if titles:
+            logger.info("Using %s result — %d titles", provider, len(titles))
+            return titles
+        logger.debug("%s returned nothing — trying next provider", provider)
 
-    # 2. Try Groq
-    logger.info("Gemini failed or skipped — trying Groq")
-    titles = expand_roles_groq(role, experience)
-    if titles:
-        logger.info("Using Groq result — %d titles", len(titles))
-        return titles
-
-    # 3. Try Ollama
-    logger.info("Groq failed or skipped — falling back to Ollama")
-    titles = expand_roles_ollama(role, experience)
-    if titles:
-        logger.info("Using Ollama result — %d titles", len(titles))
-        return titles
-
-    logger.warning("All AI engines failed — returning original role only: ['%s']", role)
+    logger.warning("All providers failed — returning original role only: ['%s']", role)
     return [role]
